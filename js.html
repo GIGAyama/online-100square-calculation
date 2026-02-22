@@ -3,7 +3,7 @@
    * =========================================================================
    * GIGA Standard リファクタリング v2
    * ファイル: js.html (クライアント側ロジック)
-   * 概要: 画面遷移、問題生成、タイマー、2キャンバス制御、GASとの通信処理
+   * 概要: 画面遷移廃止、シームレスな結果表示と再スタート、操作性改善
    * =========================================================================
    */
 
@@ -16,7 +16,6 @@
   let finalScore = 0;
   let tableData = { rows: [], cols: [] }; 
 
-  // ★キャンバス用変数 (2つ分を配列で管理)
   let canvases = [];
   let ctxs = [];
   let isDrawing = [false, false];
@@ -24,20 +23,84 @@
   let lastY = [0, 0];
   let isCanvasDirty = [false, false];
   
-  // AI(TensorFlow)用変数
   let tfModel = null;
   let ocrTimer = null;
-
-  // 効果音用変数
   let sounds = {};
+
+  let lastActiveCell = null;
+
+  let appSettings = {
+    sound: true,
+    handwriting: true,
+    numpad: false,
+    autoScore: true,
+    inputPosition: 'right'
+  };
 
   // --- 初期化処理 ---
   window.onload = function() {
+    loadSettings();
     initCanvas();
     window.addEventListener('resize', resizeCanvas);
     previewTable();
     initAIAndAudio();
+    setupKeyboardEvents(); 
   };
+
+  // --- ★設定管理処理 ---
+  function loadSettings() {
+    const saved = localStorage.getItem('giga100masu_settings');
+    if (saved) {
+      try {
+        appSettings = { ...appSettings, ...JSON.parse(saved) };
+      } catch(e) { console.error("設定読み込みエラー"); }
+    }
+    applySettings();
+  }
+
+  function openSettings() {
+    document.getElementById('setting-sound').checked = appSettings.sound;
+    document.getElementById('setting-handwriting').checked = appSettings.handwriting;
+    document.getElementById('setting-numpad').checked = appSettings.numpad;
+    document.getElementById('setting-autoScore').checked = appSettings.autoScore;
+    document.getElementById('setting-position').value = appSettings.inputPosition;
+    
+    const modal = new bootstrap.Modal(document.getElementById('settingsModal'));
+    modal.show();
+  }
+
+  window.saveSettings = function() {
+    appSettings.sound = document.getElementById('setting-sound').checked;
+    appSettings.handwriting = document.getElementById('setting-handwriting').checked;
+    appSettings.numpad = document.getElementById('setting-numpad').checked;
+    appSettings.autoScore = document.getElementById('setting-autoScore').checked;
+    appSettings.inputPosition = document.getElementById('setting-position').value;
+    
+    localStorage.setItem('giga100masu_settings', JSON.stringify(appSettings));
+    applySettings();
+    
+    const modal = bootstrap.Modal.getInstance(document.getElementById('settingsModal'));
+    modal.hide();
+  };
+
+  function applySettings() {
+    document.getElementById('handwriting-area').style.display = appSettings.handwriting ? 'block' : 'none';
+    document.getElementById('numpad-area').style.display = appSettings.numpad ? 'block' : 'none';
+    
+    const colInput = document.getElementById('col-input');
+    if (appSettings.inputPosition === 'left') {
+      colInput.style.order = "-1";
+    } else {
+      colInput.style.order = "1"; 
+    }
+
+    const manualBtn = document.getElementById('manual-finish-btn');
+    if (document.getElementById('start-btn').style.display === 'none') {
+      manualBtn.style.display = appSettings.autoScore ? 'none' : 'inline-block';
+    }
+
+    if (appSettings.handwriting) resizeCanvas();
+  }
 
   function initAIAndAudio() {
     const statusEl = document.getElementById('ocr-status');
@@ -82,60 +145,171 @@
     }).loadModelData();
   }
 
-  // --- 1. 画面遷移 (SPA) ---
-  function showPage(pageId) {
-    const pages = document.querySelectorAll('.page');
-    pages.forEach(page => page.classList.remove('active'));
-    document.getElementById(pageId).classList.add('active');
+  function setupKeyboardEvents() {
+    document.addEventListener('keydown', function(e) {
+      if (document.getElementById('start-btn').style.display !== 'none') return;
+
+      if (e.code === 'Space') {
+        if (e.target.tagName === 'INPUT' || document.activeElement.tagName === 'INPUT') {
+          e.preventDefault();
+        }
+        focusFirstEmptyCell();
+        return;
+      }
+
+      if (e.target.classList.contains('calc-input')) {
+        const r = parseInt(e.target.getAttribute('data-row'), 10);
+        const c = parseInt(e.target.getAttribute('data-col'), 10);
+        let nextR = r;
+        let nextC = c;
+
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          moveToNextCell(r, c); 
+          return;
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          nextC = c + 1;
+          if (nextC >= 10) { nextC = 0; nextR++; }
+        } else if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          nextC = c - 1;
+          if (nextC < 0) { nextC = 9; nextR--; }
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          nextR = r + 1;
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          nextR = r - 1;
+        } else {
+          return; 
+        }
+
+        const nextInput = document.querySelector(`input[data-row="${nextR}"][data-col="${nextC}"]`);
+        if (nextInput) nextInput.focus();
+      }
+    });
+  }
+
+  window.focusFirstEmptyCell = function() {
+    const allInputs = Array.from(document.querySelectorAll('.calc-input'));
+    const emptyInput = allInputs.find(input => 
+      !input.disabled && !input.classList.contains('is-correct') && input.value === ""
+    );
+    if (emptyInput) {
+      emptyInput.focus();
+    } else {
+      const notCorrect = document.querySelector('.calc-input:not(:disabled):not(.is-correct)');
+      if (notCorrect) notCorrect.focus();
+    }
+  };
+
+  function getActiveOrLastCell() {
+    let activeInput = document.activeElement;
+    if (activeInput && activeInput.classList.contains('calc-input')) {
+      return activeInput;
+    }
+    if (lastActiveCell && !lastActiveCell.disabled && !lastActiveCell.classList.contains('is-correct')) {
+      lastActiveCell.focus();
+      return lastActiveCell;
+    }
+    focusFirstEmptyCell();
+    return document.activeElement.classList.contains('calc-input') ? document.activeElement : null;
   }
 
   // --- 2. ゲーム進行制御 ---
-  function previewTable() {
+
+  // 設定を変えた時、スタート前なら表をプレビューして、結果表示などを消す
+  window.previewTable = function() {
     currentMode = document.getElementById('mode-select').value;
     currentCount = parseInt(document.getElementById('count-select').value, 10);
     generateTable(currentMode, currentCount, true);
-  }
+    
+    // 結果表示を隠し、ボタンを「スタート！」に戻す
+    document.getElementById('result-display-area').classList.add('d-none');
+    const startBtn = document.getElementById('start-btn');
+    startBtn.innerHTML = '<i class="bi bi-play-circle-fill"></i> スタート！';
+  };
 
-  function startGame() {
+  window.startGame = function() {
     document.getElementById('mode-select').disabled = true;
     document.getElementById('count-select').disabled = true;
     document.getElementById('start-btn').style.display = 'none';
+    
+    // 結果表示を隠す
+    document.getElementById('result-display-area').classList.add('d-none');
 
     generateTable(currentMode, currentCount, false);
 
+    lastActiveCell = null; 
     const firstInput = document.querySelector('input[data-row="0"][data-col="0"]');
-    if (firstInput) firstInput.focus();
+    if (firstInput) {
+      firstInput.focus();
+      lastActiveCell = firstInput;
+    }
+
+    document.getElementById('manual-finish-btn').style.display = appSettings.autoScore ? 'none' : 'inline-block';
 
     resizeCanvas();
-    clearAllCanvas(true);
+    if(window.clearAllCanvas) clearAllCanvas(true);
     startTimer();
-  }
+  };
 
-  function finishGame() {
+  window.finishGame = function() {
     clearInterval(timerInterval);
     playSound('end'); 
     
-    const correctInputs = document.querySelectorAll('.calc-input.is-correct');
-    finalScore = correctInputs.length;
+    let score = 0;
+    const inputs = document.querySelectorAll('.calc-input');
+    
+    inputs.forEach(input => {
+      let val = input.value;
+      const r = parseInt(input.getAttribute('data-row'), 10);
+      const c = parseInt(input.getAttribute('data-col'), 10);
+      const rowVal = tableData.rows[r];
+      const colVal = tableData.cols[c];
+      
+      let correctAnswer;
+      if (currentMode === 'たし算') correctAnswer = rowVal + colVal;
+      else if (currentMode === '引き算') correctAnswer = rowVal - colVal;
+      else if (currentMode === 'かけ算') correctAnswer = rowVal * colVal;
 
-    document.getElementById('result-score').innerText = finalScore + ' / ' + currentCount;
-    document.getElementById('result-time').innerText = finalTime + ' 秒';
+      if (val !== "" && parseInt(val, 10) === correctAnswer) {
+        score++;
+        input.classList.remove('is-wrong');
+        input.classList.add('is-correct');
+      } else {
+        input.classList.add('is-wrong');
+        if (!appSettings.autoScore) {
+           input.type = "text"; 
+           input.value = val === "" ? `無答 ➡ ${correctAnswer}` : `${val} ➡ ${correctAnswer}`;
+           input.style.fontSize = "0.9rem";
+        }
+      }
+      input.disabled = true; 
+    });
 
-    showPage('page-result');
-    submitRecord();
-  }
+    finalScore = score;
+    finalTime = document.getElementById('timer-display').innerText;
 
-  function resetGame() {
+    // ★ 画面遷移なし！その場に結果を表示する
+    document.getElementById('main-result-score').innerText = finalScore + ' / ' + currentCount;
+    document.getElementById('main-result-time').innerText = finalTime;
+    document.getElementById('result-display-area').classList.remove('d-none');
+    
+    // ★ 設定の変更を許可し、「もういちど！」ボタンを復活させる
     document.getElementById('mode-select').disabled = false;
     document.getElementById('count-select').disabled = false;
-    document.getElementById('start-btn').style.display = 'inline-block';
     
-    clearInterval(timerInterval);
-    document.getElementById('timer-display').innerText = "0.0";
+    const startBtn = document.getElementById('start-btn');
+    startBtn.style.display = 'inline-block';
+    startBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> もういちど！';
     
-    showPage('page-main');
-    previewTable();
-  }
+    document.getElementById('manual-finish-btn').style.display = 'none';
+
+    // 裏で静かに記録を送信する（全画面ローディングは行わない）
+    submitRecord();
+  };
 
   // --- 3. 問題生成と入力制御 ---
   function generateTable(mode, count, isDisabled) {
@@ -167,7 +341,7 @@
       html += '<tr>';
       html += `<th>${tableData.rows[r]}</th>`; 
       for (let c = 0; c < colsCount; c++) {
-        html += `<td><input type="tel" class="calc-input" data-row="${r}" data-col="${c}" oninput="handleInput(this)" ${disabledAttr}></td>`;
+        html += `<td><input type="tel" class="calc-input" data-row="${r}" data-col="${c}" oninput="handleInput(this)" onfocus="lastActiveCell=this" ${disabledAttr}></td>`;
       }
       html += '</tr>';
     }
@@ -175,7 +349,7 @@
     container.innerHTML = html;
   }
 
-  function handleInput(inputElem) {
+  window.handleInput = function(inputElem) {
     let val = inputElem.value;
     val = val.replace(/[０-９]/g, function(s) { return String.fromCharCode(s.charCodeAt(0) - 0xFEE0); });
     val = val.replace(/[^0-9-]/g, '');
@@ -183,6 +357,12 @@
 
     if (val === "") {
       inputElem.classList.remove('is-wrong');
+      return;
+    }
+
+    if (!appSettings.autoScore) {
+      inputElem.classList.remove('is-wrong');
+      inputElem.classList.remove('is-correct');
       return;
     }
 
@@ -202,9 +382,7 @@
       inputElem.disabled = true;
       playSound('correct');
       
-      // ★正解した瞬間に両方のキャンバスを自動クリアする！
-      clearAllCanvas(true); 
-      
+      if(window.clearAllCanvas) clearAllCanvas(true); 
       moveToNextCell(r, c);
     } else {
       if (val.length >= String(correctAnswer).length) {
@@ -214,14 +392,38 @@
         inputElem.classList.remove('is-wrong');
       }
     }
-  }
+  };
 
   function playSound(type) {
+    if (!appSettings.sound) return; 
     if (sounds[type]) {
       sounds[type].currentTime = 0;
       sounds[type].play().catch(e => console.log("音声再生ブロック:", e));
     }
   }
+
+  // --- ★ソフトウェア・テンキー処理 ---
+  window.inputNumpad = function(val) {
+    let activeInput = getActiveOrLastCell(); 
+    if (!activeInput) return;
+    if (activeInput.disabled || activeInput.classList.contains('is-correct')) return;
+
+    if (val === 'back') {
+      activeInput.value = activeInput.value.slice(0, -1);
+    } else {
+      activeInput.value += val;
+    }
+    
+    handleInput(activeInput);
+  };
+
+  window.focusNextCell = function() {
+    let activeInput = getActiveOrLastCell();
+    if (!activeInput) return;
+    const r = parseInt(activeInput.getAttribute('data-row'), 10);
+    const c = parseInt(activeInput.getAttribute('data-col'), 10);
+    moveToNextCell(r, c);
+  };
 
   function moveToNextCell(r, c) {
     let nextC = c + 1;
@@ -240,6 +442,7 @@
   }
 
   function checkAllComplete() {
+    if (!appSettings.autoScore) return;
     const allInputs = document.querySelectorAll('.calc-input');
     const correctInputs = document.querySelectorAll('.calc-input.is-correct');
     if (allInputs.length > 0 && allInputs.length === correctInputs.length) {
@@ -266,15 +469,14 @@
     canvases[1] = document.getElementById('handwriting-canvas-2');
     
     for (let i = 0; i < 2; i++) {
+      if (!canvases[i]) continue;
       ctxs[i] = canvases[i].getContext('2d');
 
-      // PCマウス用
       canvases[i].addEventListener('mousedown', (e) => startPosition(e, i));
       canvases[i].addEventListener('mouseup', (e) => endPosition(e, i));
       canvases[i].addEventListener('mousemove', (e) => draw(e, i));
       canvases[i].addEventListener('mouseout', (e) => endPosition(e, i));
 
-      // スマホ・タブレットのタッチ用
       canvases[i].addEventListener('touchstart', (e) => handleTouchStart(e, i), {passive: false});
       canvases[i].addEventListener('touchend', (e) => endPosition(e, i));
       canvases[i].addEventListener('touchmove', (e) => handleTouchMove(e, i), {passive: false});
@@ -282,6 +484,7 @@
   }
 
   function resizeCanvas() {
+    if (!appSettings.handwriting) return;
     if (!canvases || canvases.length === 0) return;
     for (let i = 0; i < 2; i++) {
       if (!canvases[i]) continue;
@@ -289,13 +492,10 @@
       canvases[i].width = container.clientWidth;
       canvases[i].height = container.clientHeight; 
     }
-    clearAllCanvas(true);
+    if(window.clearAllCanvas) clearAllCanvas(true);
   }
 
-  /**
-   * 両方のキャンバスを白紙に戻す
-   */
-  function clearAllCanvas(resetDirty = true) {
+  window.clearAllCanvas = function(resetDirty = true) {
     for (let i = 0; i < 2; i++) {
       if(ctxs[i] && canvases[i]) {
         ctxs[i].fillStyle = '#ffffff';
@@ -304,7 +504,7 @@
       }
     }
     if(resetDirty) clearTimeout(ocrTimer);
-  }
+  };
 
   function getPosition(e, i) {
     const rect = canvases[i].getBoundingClientRect();
@@ -317,6 +517,7 @@
   }
 
   function startPosition(e, i) {
+    if (!appSettings.handwriting) return; 
     isDrawing[i] = true;
     isCanvasDirty[i] = true;
     clearTimeout(ocrTimer); 
@@ -331,7 +532,6 @@
     isDrawing[i] = false;
     ctxs[i].beginPath();
     
-    // 書いてから約0.8秒待つと自動でAIが読み取る
     clearTimeout(ocrTimer);
     ocrTimer = setTimeout(recognizeHandwriting, 800);
   }
@@ -371,28 +571,13 @@
     draw(mouseEvent, i);
   }
 
-  /**
-   * ★2キャンバス対応の推論ロジック
-   * 十の位と一の位のキャンバスをそれぞれ読み取り、合体させてセルに「上書き」する
-   */
   async function recognizeHandwriting() {
-    if (!tfModel) return;
+    if (!appSettings.handwriting || !tfModel) return; 
     
-    // どちらのキャンバスにも書いてなければ何もしない
     if (!isCanvasDirty[0] && !isCanvasDirty[1]) return;
     
-    // 入力するセルを特定する
-    let activeInput = document.activeElement;
-    if (!activeInput || !activeInput.classList.contains('calc-input')) {
-      activeInput = document.querySelector('.calc-input:not(.is-correct)');
-      if (activeInput) {
-        activeInput.focus();
-      } else {
-        return; 
-      }
-    }
-    // すでに正解済みのセルなら何もしない
-    if (activeInput.classList.contains('is-correct')) return;
+    let activeInput = getActiveOrLastCell(); 
+    if (!activeInput || activeInput.disabled || activeInput.classList.contains('is-correct')) return;
 
     const statusEl = document.getElementById('ocr-status');
     statusEl.innerHTML = '<span class="spinner-border spinner-border-sm text-primary"></span> 読み取り中...';
@@ -400,7 +585,6 @@
     try {
       let finalNumberStr = "";
       
-      // 2つのキャンバスを順番にAIにかける
       for (let i = 0; i < 2; i++) {
         if (isCanvasDirty[i]) {
           const tensor = preprocessCanvas(canvases[i]);
@@ -422,11 +606,17 @@
       if (finalNumberStr.length > 0) {
         statusEl.innerText = "「" + finalNumberStr + "」を入力しました";
         
-        // ★追記（+=）ではなく、2桁の数字として「上書き（=）」する
         activeInput.value = finalNumberStr;
         handleInput(activeInput);
         
-        // ※正解した場合は handleInput() の中で自動的にキャンバスが消去されます
+        if (!appSettings.autoScore) {
+           moveToNextCell(
+             parseInt(activeInput.getAttribute('data-row'), 10), 
+             parseInt(activeInput.getAttribute('data-col'), 10)
+           );
+           if(window.clearAllCanvas) clearAllCanvas(true);
+        }
+        
       } else {
         statusEl.innerText = "数字がわかりませんでした";
       }
@@ -434,13 +624,10 @@
     } catch(err) {
       console.error(err);
       statusEl.innerText = "エラーがおきました";
-      clearAllCanvas(true);
+      if(window.clearAllCanvas) clearAllCanvas(true);
     }
   }
 
-  /**
-   * キャンバスの描画内容をAIが読める28x28の白黒テンソルに変換する高度な前処理
-   */
   function preprocessCanvas(sourceCanvas) {
     const sCtx = sourceCanvas.getContext('2d');
     const imgData = sCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
@@ -495,7 +682,7 @@
     return tf.tensor4d(input, [1, 28, 28, 1]);
   }
 
-  // --- 6. GAS通信ラッパー (リトライ機能付き) ---
+  // --- 6. GAS通信ラッパー (裏で静かに送信) ---
   function submitRecord() {
     const recordData = {
       mode: currentMode,
@@ -503,8 +690,7 @@
       score: finalScore,
       time: parseFloat(finalTime)
     };
-
-    document.getElementById('loading-overlay').classList.add('active');
+    // ★ローディングで画面を止めず、裏でこっそり送る
     callGasWithRetry(recordData, 1);
   }
 
@@ -513,41 +699,25 @@
 
     google.script.run
       .withSuccessHandler(function(response) {
-        document.getElementById('loading-overlay').classList.remove('active');
-        
         if (response.success) {
+          // 右上に小さく成功を通知（邪魔にならない）
           Swal.fire({
             toast: true,
             position: 'top-end',
             icon: 'success',
             title: 'きろくを ほぞんしました！',
             showConfirmButton: false,
-            timer: 3000
+            timer: 2000
           });
         } else {
           if (attempt < MAX_RETRIES) {
             setTimeout(() => callGasWithRetry(data, attempt + 1), 2000); 
-          } else {
-            Swal.fire({
-              icon: 'warning',
-              title: 'きろくできませんでした',
-              text: response.message + '（せんせいに おしえてください）',
-              confirmButtonText: 'わかった'
-            });
           }
         }
       })
       .withFailureHandler(function(error) {
         if (attempt < MAX_RETRIES) {
           setTimeout(() => callGasWithRetry(data, attempt + 1), 2000);
-        } else {
-          document.getElementById('loading-overlay').classList.remove('active');
-          Swal.fire({
-            icon: 'error',
-            title: 'つうしんエラー',
-            text: 'ネットワークを かくにんして、せんせいに おしえてください。',
-            confirmButtonText: 'わかった'
-          });
         }
       })
       .saveRecord(data);
