@@ -1,0 +1,198 @@
+<style>
+  /**
+   * =========================================================================
+   * GIGA Standard リファクタリング v2
+   * ファイル: css.html (スタイルシート)
+   * 概要: アプリ全体のデザイン、レイアウト、コンポーネントのスタイルを定義します。
+   * =========================================================================
+   */
+
+  /* --- 1. フォントの読み込み (Zen Maru Gothic) --- */
+  @import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap');
+
+  /* --- 2. CSS変数 (カラーテーマの定義) --- */
+  :root {
+    --giga-primary: #1a73e8;       /* メインカラー (Google Blue) */
+    --giga-primary-hover: #1557b0; /* ホバー時の濃い青 */
+    --giga-bg: #f8f9fa;            /* 背景色 (優しいグレー) */
+    --giga-text: #202124;          /* メインテキスト色 */
+    --giga-correct: #d4edda;       /* 正解時の背景色 (薄い緑) */
+    --giga-wrong: #f8d7da;         /* 不正解時の背景色 (薄い赤) */
+    --giga-canvas-bg: #ffffff;     /* キャンバスの背景色 */
+  }
+
+  /* --- 3. ベーススタイル --- */
+  body {
+    font-family: 'Zen Maru Gothic', sans-serif;
+    background-color: var(--giga-bg);
+    color: var(--giga-text);
+    /* タップ時のハイライトを無効化（アプリっぽくするため） */
+    -webkit-tap-highlight-color: transparent; 
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 700;
+  }
+
+  /* --- 4. ルビ (<ruby>, <rt>) のスタイル調整 --- */
+  ruby {
+    ruby-align: center;
+  }
+  rt {
+    font-size: 0.6em; /* デフォルトより少しだけ大きくして見やすく */
+    color: #5f6368;   /* 漢字より少し薄い色にしてメインの文字を引き立てる */
+    font-weight: 500;
+  }
+
+  /* --- 5. 100マス計算用テーブルのスタイル --- */
+  .calc-table-container {
+    overflow-x: auto; /* 画面に収まらない場合はスクロール可能に */
+    margin-bottom: 1rem;
+    /* スクロールバーのスタイル（Webkit系） */
+    &::-webkit-scrollbar { height: 8px; }
+    &::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+    &::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+  }
+
+  .calc-table {
+    border-collapse: collapse;
+    margin: 0 auto; /* 中央寄せ */
+    background-color: #fff;
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075); /* smシャドウ */
+  }
+
+  .calc-table th, .calc-table td {
+    border: 1px solid #dee2e6;
+    text-align: center;
+    vertical-align: middle;
+    width: 3rem; /* セルを正方形に近くする */
+    height: 3rem;
+    font-size: 1.25rem;
+    padding: 0;
+  }
+
+  /* ヘッダー行・列（問題の数字が入る場所） */
+  .calc-table th {
+    background-color: #e8f0fe; /* 薄い青 */
+    color: var(--giga-primary);
+    font-weight: 700;
+  }
+
+  /* 左上のセル（演算子が入る場所） */
+  .calc-table th.operator-cell {
+    background-color: var(--giga-primary);
+    color: white;
+    font-size: 1.5rem;
+  }
+
+  /* 入力欄（input）のスタイル */
+  .calc-input {
+    width: 100%;
+    height: 100%;
+    border: none;
+    text-align: center;
+    font-size: 1.25rem;
+    font-family: 'Zen Maru Gothic', sans-serif;
+    font-weight: 500;
+    color: var(--giga-text);
+    background-color: transparent;
+    outline: none; /* フォーカス時のデフォルト枠線を消す */
+  }
+
+  /* 入力中（フォーカス時）のセルのスタイル */
+  .calc-input:focus {
+    background-color: #fff3cd; /* 薄い黄色でハイライト */
+    box-shadow: inset 0 0 0 2px var(--giga-primary); /* 内側に青い枠線 */
+  }
+
+  /* 結果表示用（正解・不正解） */
+  .calc-input.is-correct {
+    background-color: var(--giga-correct) !important;
+    color: #155724;
+    font-weight: 700;
+  }
+  .calc-input.is-wrong {
+    background-color: var(--giga-wrong) !important;
+    color: #721c24;
+    text-decoration: line-through; /* 間違った入力に取り消し線 */
+  }
+
+  /* --- 6. 手書きキャンバスのスタイル --- */
+  .drawing-canvas-container {
+    border: 2px solid #dee2e6;
+    border-radius: 0.5rem;
+    background-color: var(--giga-canvas-bg);
+    overflow: hidden;
+    position: relative;
+    /* タッチデバイスでのスクロールやズームを防止し、描画に専念させる */
+    touch-action: none; 
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+    width: 100%;
+  }
+  
+  canvas#handwriting-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* --- 7. SPA画面遷移用のスタイル --- */
+  .page {
+    display: none; /* デフォルトは非表示 */
+    animation: fadeIn 0.3s ease-in-out; /* ふわっと表示されるアニメーション */
+  }
+  .page.active {
+    display: block; /* .activeが付いた要素だけ表示 */
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* --- 8. ローディング・オーバーレイ --- */
+  #loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(255, 255, 255, 0.8); /* 半透明の白 */
+    z-index: 9999; /* 最前面に表示 */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    visibility: hidden; /* デフォルトは非表示 */
+    opacity: 0;
+    transition: opacity 0.3s, visibility 0.3s;
+  }
+  
+  #loading-overlay.active {
+    visibility: visible;
+    opacity: 1;
+  }
+
+  .spinner-border {
+    width: 3rem;
+    height: 3rem;
+    color: var(--giga-primary);
+  }
+
+  /* --- 9. その他ユーティリティ --- */
+  .btn-giga {
+    background-color: var(--giga-primary);
+    color: white;
+    font-weight: 700;
+    border-radius: 2rem; /* 丸みを帯びたボタン */
+    padding: 0.5rem 1.5rem;
+    transition: background-color 0.2s, transform 0.1s;
+  }
+  .btn-giga:hover {
+    background-color: var(--giga-primary-hover);
+    color: white;
+  }
+  .btn-giga:active {
+    transform: scale(0.95); /* 押したときのへこみ効果 */
+  }
+</style>
