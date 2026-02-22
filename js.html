@@ -1,0 +1,555 @@
+<script>
+  /**
+   * =========================================================================
+   * GIGA Standard リファクタリング v2
+   * ファイル: js.html (クライアント側ロジック)
+   * 概要: 画面遷移、問題生成、タイマー、2キャンバス制御、GASとの通信処理
+   * =========================================================================
+   */
+
+  // --- グローバル変数 ---
+  let startTime;
+  let timerInterval;
+  let currentMode = '';
+  let currentCount = 0;
+  let finalTime = 0;
+  let finalScore = 0;
+  let tableData = { rows: [], cols: [] }; 
+
+  // ★キャンバス用変数 (2つ分を配列で管理)
+  let canvases = [];
+  let ctxs = [];
+  let isDrawing = [false, false];
+  let lastX = [0, 0];
+  let lastY = [0, 0];
+  let isCanvasDirty = [false, false];
+  
+  // AI(TensorFlow)用変数
+  let tfModel = null;
+  let ocrTimer = null;
+
+  // 効果音用変数
+  let sounds = {};
+
+  // --- 初期化処理 ---
+  window.onload = function() {
+    initCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    previewTable();
+    initAIAndAudio();
+  };
+
+  function initAIAndAudio() {
+    const statusEl = document.getElementById('ocr-status');
+    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm text-primary" style="width: 1rem; height: 1rem;"></span> AIと音声をじゅんび中...';
+    
+    google.script.run.withSuccessHandler(function(audioData) {
+      if(audioData.correct) sounds.correct = new Audio("data:audio/mp3;base64," + audioData.correct);
+      if(audioData.incorrect) sounds.incorrect = new Audio("data:audio/mp3;base64," + audioData.incorrect);
+      if(audioData.end) sounds.end = new Audio("data:audio/mp3;base64," + audioData.end);
+    }).loadAudioData();
+
+    google.script.run.withSuccessHandler(async function(modelData) {
+      if (!modelData.success) {
+        statusEl.innerText = "AIのじゅんびに失敗しました";
+        return;
+      }
+      try {
+        const modelTopology = JSON.parse(modelData.jsonStr);
+        const binaryString = window.atob(modelData.binBase64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        const customIOHandler = {
+          load: async () => {
+            return {
+              modelTopology: modelTopology.modelTopology,
+              weightSpecs: modelTopology.weightsManifest[0].weights,
+              weightData: bytes.buffer,
+              format: 'graph-model'
+            };
+          }
+        };
+        
+        tfModel = await tf.loadGraphModel(customIOHandler);
+        statusEl.innerText = "手書きで自動入力できます！";
+      } catch (e) {
+        console.error("TF初期化エラー:", e);
+        statusEl.innerText = "AIのじゅんびに失敗しました";
+      }
+    }).loadModelData();
+  }
+
+  // --- 1. 画面遷移 (SPA) ---
+  function showPage(pageId) {
+    const pages = document.querySelectorAll('.page');
+    pages.forEach(page => page.classList.remove('active'));
+    document.getElementById(pageId).classList.add('active');
+  }
+
+  // --- 2. ゲーム進行制御 ---
+  function previewTable() {
+    currentMode = document.getElementById('mode-select').value;
+    currentCount = parseInt(document.getElementById('count-select').value, 10);
+    generateTable(currentMode, currentCount, true);
+  }
+
+  function startGame() {
+    document.getElementById('mode-select').disabled = true;
+    document.getElementById('count-select').disabled = true;
+    document.getElementById('start-btn').style.display = 'none';
+
+    generateTable(currentMode, currentCount, false);
+
+    const firstInput = document.querySelector('input[data-row="0"][data-col="0"]');
+    if (firstInput) firstInput.focus();
+
+    resizeCanvas();
+    clearAllCanvas(true);
+    startTimer();
+  }
+
+  function finishGame() {
+    clearInterval(timerInterval);
+    playSound('end'); 
+    
+    const correctInputs = document.querySelectorAll('.calc-input.is-correct');
+    finalScore = correctInputs.length;
+
+    document.getElementById('result-score').innerText = finalScore + ' / ' + currentCount;
+    document.getElementById('result-time').innerText = finalTime + ' 秒';
+
+    showPage('page-result');
+    submitRecord();
+  }
+
+  function resetGame() {
+    document.getElementById('mode-select').disabled = false;
+    document.getElementById('count-select').disabled = false;
+    document.getElementById('start-btn').style.display = 'inline-block';
+    
+    clearInterval(timerInterval);
+    document.getElementById('timer-display').innerText = "0.0";
+    
+    showPage('page-main');
+    previewTable();
+  }
+
+  // --- 3. 問題生成と入力制御 ---
+  function generateTable(mode, count, isDisabled) {
+    const container = document.getElementById('calc-table-container');
+    const colsCount = 10;
+    const rowsCount = count / 10;
+
+    tableData.cols = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
+    tableData.rows = [];
+
+    for (let i = 0; i < rowsCount; i++) {
+      if (mode === '引き算') {
+        tableData.rows.push(Math.floor(Math.random() * 10) + 10);
+      } else {
+        tableData.rows.push(Math.floor(Math.random() * 10));
+      }
+    }
+
+    let operatorSymbol = mode === 'たし算' ? '+' : (mode === '引き算' ? '-' : '×');
+    let html = '<table class="calc-table"><thead><tr>';
+    html += `<th class="operator-cell">${operatorSymbol}</th>`;
+    
+    tableData.cols.forEach(num => { html += `<th>${num}</th>`; });
+    html += '</tr></thead><tbody>';
+
+    const disabledAttr = isDisabled ? 'disabled' : '';
+
+    for (let r = 0; r < rowsCount; r++) {
+      html += '<tr>';
+      html += `<th>${tableData.rows[r]}</th>`; 
+      for (let c = 0; c < colsCount; c++) {
+        html += `<td><input type="tel" class="calc-input" data-row="${r}" data-col="${c}" oninput="handleInput(this)" ${disabledAttr}></td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  function handleInput(inputElem) {
+    let val = inputElem.value;
+    val = val.replace(/[０-９]/g, function(s) { return String.fromCharCode(s.charCodeAt(0) - 0xFEE0); });
+    val = val.replace(/[^0-9-]/g, '');
+    inputElem.value = val;
+
+    if (val === "") {
+      inputElem.classList.remove('is-wrong');
+      return;
+    }
+
+    const r = parseInt(inputElem.getAttribute('data-row'), 10);
+    const c = parseInt(inputElem.getAttribute('data-col'), 10);
+    const rowVal = tableData.rows[r];
+    const colVal = tableData.cols[c];
+    
+    let correctAnswer;
+    if (currentMode === 'たし算') correctAnswer = rowVal + colVal;
+    else if (currentMode === '引き算') correctAnswer = rowVal - colVal;
+    else if (currentMode === 'かけ算') correctAnswer = rowVal * colVal;
+
+    if (parseInt(val, 10) === correctAnswer) {
+      inputElem.classList.remove('is-wrong');
+      inputElem.classList.add('is-correct');
+      inputElem.disabled = true;
+      playSound('correct');
+      
+      // ★正解した瞬間に両方のキャンバスを自動クリアする！
+      clearAllCanvas(true); 
+      
+      moveToNextCell(r, c);
+    } else {
+      if (val.length >= String(correctAnswer).length) {
+        inputElem.classList.add('is-wrong');
+        playSound('incorrect');
+      } else {
+        inputElem.classList.remove('is-wrong');
+      }
+    }
+  }
+
+  function playSound(type) {
+    if (sounds[type]) {
+      sounds[type].currentTime = 0;
+      sounds[type].play().catch(e => console.log("音声再生ブロック:", e));
+    }
+  }
+
+  function moveToNextCell(r, c) {
+    let nextC = c + 1;
+    let nextR = r;
+    if (nextC >= 10) {
+      nextC = 0;
+      nextR++;
+    }
+    
+    const nextInput = document.querySelector(`input[data-row="${nextR}"][data-col="${nextC}"]`);
+    if (nextInput) {
+      nextInput.focus();
+    } else {
+      checkAllComplete();
+    }
+  }
+
+  function checkAllComplete() {
+    const allInputs = document.querySelectorAll('.calc-input');
+    const correctInputs = document.querySelectorAll('.calc-input.is-correct');
+    if (allInputs.length > 0 && allInputs.length === correctInputs.length) {
+      finishGame(); 
+    }
+  }
+
+  // --- 4. タイマー処理 ---
+  function startTimer() {
+    startTime = Date.now();
+    const display = document.getElementById('timer-display');
+    display.innerText = "0.0";
+
+    timerInterval = setInterval(() => {
+      let elapsed = (Date.now() - startTime) / 1000;
+      finalTime = elapsed.toFixed(1);
+      display.innerText = finalTime;
+    }, 100);
+  }
+
+  // --- 5. 2つの手書きキャンバスとAI文字認識 ---
+  function initCanvas() {
+    canvases[0] = document.getElementById('handwriting-canvas-1');
+    canvases[1] = document.getElementById('handwriting-canvas-2');
+    
+    for (let i = 0; i < 2; i++) {
+      ctxs[i] = canvases[i].getContext('2d');
+
+      // PCマウス用
+      canvases[i].addEventListener('mousedown', (e) => startPosition(e, i));
+      canvases[i].addEventListener('mouseup', (e) => endPosition(e, i));
+      canvases[i].addEventListener('mousemove', (e) => draw(e, i));
+      canvases[i].addEventListener('mouseout', (e) => endPosition(e, i));
+
+      // スマホ・タブレットのタッチ用
+      canvases[i].addEventListener('touchstart', (e) => handleTouchStart(e, i), {passive: false});
+      canvases[i].addEventListener('touchend', (e) => endPosition(e, i));
+      canvases[i].addEventListener('touchmove', (e) => handleTouchMove(e, i), {passive: false});
+    }
+  }
+
+  function resizeCanvas() {
+    if (!canvases || canvases.length === 0) return;
+    for (let i = 0; i < 2; i++) {
+      if (!canvases[i]) continue;
+      const container = canvases[i].parentElement;
+      canvases[i].width = container.clientWidth;
+      canvases[i].height = container.clientHeight; 
+    }
+    clearAllCanvas(true);
+  }
+
+  /**
+   * 両方のキャンバスを白紙に戻す
+   */
+  function clearAllCanvas(resetDirty = true) {
+    for (let i = 0; i < 2; i++) {
+      if(ctxs[i] && canvases[i]) {
+        ctxs[i].fillStyle = '#ffffff';
+        ctxs[i].fillRect(0, 0, canvases[i].width, canvases[i].height);
+        if(resetDirty) isCanvasDirty[i] = false;
+      }
+    }
+    if(resetDirty) clearTimeout(ocrTimer);
+  }
+
+  function getPosition(e, i) {
+    const rect = canvases[i].getBoundingClientRect();
+    const scaleX = canvases[i].width / rect.width;
+    const scaleY = canvases[i].height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY
+    };
+  }
+
+  function startPosition(e, i) {
+    isDrawing[i] = true;
+    isCanvasDirty[i] = true;
+    clearTimeout(ocrTimer); 
+    const pos = getPosition(e, i);
+    lastX[i] = pos.x;
+    lastY[i] = pos.y;
+    draw(e, i);
+  }
+
+  function endPosition(e, i) {
+    if (!isDrawing[i]) return;
+    isDrawing[i] = false;
+    ctxs[i].beginPath();
+    
+    // 書いてから約0.8秒待つと自動でAIが読み取る
+    clearTimeout(ocrTimer);
+    ocrTimer = setTimeout(recognizeHandwriting, 800);
+  }
+
+  function draw(e, i) {
+    if (!isDrawing[i]) return;
+    isCanvasDirty[i] = true;
+    clearTimeout(ocrTimer);
+    
+    const pos = getPosition(e, i);
+    
+    ctxs[i].lineWidth = 12; 
+    ctxs[i].lineCap = 'round';
+    ctxs[i].lineJoin = 'round';
+    ctxs[i].strokeStyle = '#000000'; 
+
+    ctxs[i].beginPath();
+    ctxs[i].moveTo(lastX[i], lastY[i]);
+    ctxs[i].lineTo(pos.x, pos.y);
+    ctxs[i].stroke();
+    
+    lastX[i] = pos.x;
+    lastY[i] = pos.y;
+  }
+
+  function handleTouchStart(e, i) {
+    e.preventDefault(); 
+    const touch = e.touches[0];
+    const mouseEvent = new MouseEvent("mousedown", { clientX: touch.clientX, clientY: touch.clientY });
+    startPosition(mouseEvent, i);
+  }
+
+  function handleTouchMove(e, i) {
+    e.preventDefault(); 
+    const touch = e.touches[0];
+    const mouseEvent = new MouseEvent("mousemove", { clientX: touch.clientX, clientY: touch.clientY });
+    draw(mouseEvent, i);
+  }
+
+  /**
+   * ★2キャンバス対応の推論ロジック
+   * 十の位と一の位のキャンバスをそれぞれ読み取り、合体させてセルに「上書き」する
+   */
+  async function recognizeHandwriting() {
+    if (!tfModel) return;
+    
+    // どちらのキャンバスにも書いてなければ何もしない
+    if (!isCanvasDirty[0] && !isCanvasDirty[1]) return;
+    
+    // 入力するセルを特定する
+    let activeInput = document.activeElement;
+    if (!activeInput || !activeInput.classList.contains('calc-input')) {
+      activeInput = document.querySelector('.calc-input:not(.is-correct)');
+      if (activeInput) {
+        activeInput.focus();
+      } else {
+        return; 
+      }
+    }
+    // すでに正解済みのセルなら何もしない
+    if (activeInput.classList.contains('is-correct')) return;
+
+    const statusEl = document.getElementById('ocr-status');
+    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm text-primary"></span> 読み取り中...';
+    
+    try {
+      let finalNumberStr = "";
+      
+      // 2つのキャンバスを順番にAIにかける
+      for (let i = 0; i < 2; i++) {
+        if (isCanvasDirty[i]) {
+          const tensor = preprocessCanvas(canvases[i]);
+          if (!tensor) continue;
+
+          const output = tfModel.predict(tensor);
+          const digit = output.argMax(1).dataSync()[0];
+          const probability = output.max().dataSync()[0];
+
+          tensor.dispose();
+          output.dispose();
+          
+          if (probability > 0.4) {
+            finalNumberStr += String(digit);
+          }
+        }
+      }
+
+      if (finalNumberStr.length > 0) {
+        statusEl.innerText = "「" + finalNumberStr + "」を入力しました";
+        
+        // ★追記（+=）ではなく、2桁の数字として「上書き（=）」する
+        activeInput.value = finalNumberStr;
+        handleInput(activeInput);
+        
+        // ※正解した場合は handleInput() の中で自動的にキャンバスが消去されます
+      } else {
+        statusEl.innerText = "数字がわかりませんでした";
+      }
+
+    } catch(err) {
+      console.error(err);
+      statusEl.innerText = "エラーがおきました";
+      clearAllCanvas(true);
+    }
+  }
+
+  /**
+   * キャンバスの描画内容をAIが読める28x28の白黒テンソルに変換する高度な前処理
+   */
+  function preprocessCanvas(sourceCanvas) {
+    const sCtx = sourceCanvas.getContext('2d');
+    const imgData = sCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+    const data = imgData.data;
+    
+    let minX = sourceCanvas.width, minY = sourceCanvas.height, maxX = 0, maxY = 0;
+    let found = false;
+    for (let y = 0; y < sourceCanvas.height; y++) {
+      for (let x = 0; x < sourceCanvas.width; x++) {
+        const idx = (y * sourceCanvas.width + x) * 4;
+        if (data[idx+3] > 0 && data[idx] < 128) { 
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          found = true;
+        }
+      }
+    }
+    if (!found) return null;
+
+    const bWidth = maxX - minX + 1;
+    const bHeight = maxY - minY + 1;
+    const size = Math.max(bWidth, bHeight);
+    const padding = size * 0.25; 
+    const paddedSize = size + padding * 2;
+
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = paddedSize;
+    tmpCanvas.height = paddedSize;
+    const tmpCtx = tmpCanvas.getContext('2d');
+    tmpCtx.fillStyle = '#ffffff';
+    tmpCtx.fillRect(0, 0, paddedSize, paddedSize);
+    
+    const dx = padding + (size - bWidth) / 2;
+    const dy = padding + (size - bHeight) / 2;
+    tmpCtx.drawImage(sourceCanvas, minX, minY, bWidth, bHeight, dx, dy, bWidth, bHeight);
+
+    const resizedCanvas = document.createElement('canvas');
+    resizedCanvas.width = 28;
+    resizedCanvas.height = 28;
+    const resizedCtx = resizedCanvas.getContext('2d');
+    resizedCtx.drawImage(tmpCanvas, 0, 0, paddedSize, paddedSize, 0, 0, 28, 28);
+
+    const resizedData = resizedCtx.getImageData(0, 0, 28, 28).data;
+    const input = new Float32Array(28 * 28);
+    for (let i = 0; i < 28 * 28; i++) {
+      const r = resizedData[i * 4];
+      input[i] = (255 - r) / 255.0; 
+    }
+    
+    return tf.tensor4d(input, [1, 28, 28, 1]);
+  }
+
+  // --- 6. GAS通信ラッパー (リトライ機能付き) ---
+  function submitRecord() {
+    const recordData = {
+      mode: currentMode,
+      count: currentCount,
+      score: finalScore,
+      time: parseFloat(finalTime)
+    };
+
+    document.getElementById('loading-overlay').classList.add('active');
+    callGasWithRetry(recordData, 1);
+  }
+
+  function callGasWithRetry(data, attempt) {
+    const MAX_RETRIES = 3;
+
+    google.script.run
+      .withSuccessHandler(function(response) {
+        document.getElementById('loading-overlay').classList.remove('active');
+        
+        if (response.success) {
+          Swal.fire({
+            toast: true,
+            position: 'top-end',
+            icon: 'success',
+            title: 'きろくを ほぞんしました！',
+            showConfirmButton: false,
+            timer: 3000
+          });
+        } else {
+          if (attempt < MAX_RETRIES) {
+            setTimeout(() => callGasWithRetry(data, attempt + 1), 2000); 
+          } else {
+            Swal.fire({
+              icon: 'warning',
+              title: 'きろくできませんでした',
+              text: response.message + '（せんせいに おしえてください）',
+              confirmButtonText: 'わかった'
+            });
+          }
+        }
+      })
+      .withFailureHandler(function(error) {
+        if (attempt < MAX_RETRIES) {
+          setTimeout(() => callGasWithRetry(data, attempt + 1), 2000);
+        } else {
+          document.getElementById('loading-overlay').classList.remove('active');
+          Swal.fire({
+            icon: 'error',
+            title: 'つうしんエラー',
+            text: 'ネットワークを かくにんして、せんせいに おしえてください。',
+            confirmButtonText: 'わかった'
+          });
+        }
+      })
+      .saveRecord(data);
+  }
+</script>
