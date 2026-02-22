@@ -15,9 +15,9 @@ function doGet(e) {
   var htmlOutput = HtmlService.createTemplateFromFile('index').evaluate();
   
   // ページタイトルと、スマートフォン・タブレット向けのビューポート設定
-  htmlOutput.setTitle('100マスけいさん');
+  htmlOutput.setTitle('100マス計算');
   htmlOutput.addMetaTag('viewport', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
-  
+  htmlOutput.setFaviconUrl('https://drive.google.com/uc?id=1YR7PVtaTC-FqsKCf5-FxXc8TqP-N6OwL&.png');
   return htmlOutput;
 }
 
