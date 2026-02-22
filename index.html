@@ -20,14 +20,6 @@
 </head>
 <body>
   
-  <!-- 通信中のローディングオーバーレイ -->
-  <div id="loading-overlay">
-    <div class="spinner-border" role="status">
-      <span class="visually-hidden">Loading...</span>
-    </div>
-    <div class="mt-3 fw-bold text-primary"><ruby>通信中<rt>つうしんちゅう</rt></ruby>...</div>
-  </div>
-
   <div class="container py-4 mx-auto" style="max-width: 800px;">
     
     <!-- アプリタイトル -->
@@ -42,7 +34,7 @@
       <div class="card-body p-4">
 
         <!-- ==========================================
-             メイン画面 (設定とプレイを統合)
+             メイン画面 (設定・プレイ・結果 すべてを統合)
         =========================================== -->
         <div id="page-main" class="page active">
           
@@ -52,25 +44,33 @@
               <div>
                 <label class="form-label fw-bold small text-muted mb-1"><ruby>計算<rt>けいさん</rt></ruby></label>
                 <select id="mode-select" class="form-select form-select-sm" style="width: 120px;" onchange="previewTable()">
-                  <option value="たし算">たし<ruby>算<rt>ざん</rt></ruby></option>
-                  <option value="引き算">ひき<ruby>算<rt>ざん</rt></ruby></option>
-                  <option value="かけ算">かけ<ruby>算<rt>ざん</rt></ruby></option>
+                  <option value="たし算">たし算</option>
+                  <option value="引き算">ひき算</option>
+                  <option value="かけ算">かけ算</option>
                 </select>
               </div>
               <div>
                 <label class="form-label fw-bold small text-muted mb-1"><ruby>問題数<rt>もんだいすう</rt></ruby></label>
                 <select id="count-select" class="form-select form-select-sm" style="width: 100px;" onchange="previewTable()">
-                  <option value="10">10<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="20">20<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="30">30<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="40">40<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="50">50<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="60">60<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="70">70<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="80">80<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="90">90<ruby>問<rt>もん</rt></ruby></option>
-                  <option value="100">100<ruby>問<rt>もん</rt></ruby></option>
+                  <option value="10">10問</option>
+                  <option value="20">20問</option>
+                  <option value="30">30問</option>
+                  <option value="40">40問</option>
+                  <option value="50">50問</option>
+                  <option value="60">60問</option>
+                  <option value="70">70問</option>
+                  <option value="80">80問</option>
+                  <option value="90">90問</option>
+                  <option value="100">100問</option>
                 </select>
+              </div>
+              
+              <!-- 設定ボタン -->
+              <div>
+                <label class="form-label fw-bold small text-muted mb-1">&nbsp;</label>
+                <button class="btn btn-sm btn-outline-secondary d-block" onclick="openSettings()">
+                  <i class="bi bi-gear-fill"></i> <ruby>設定<rt>せってい</rt></ruby>
+                </button>
               </div>
             </div>
             
@@ -84,64 +84,80 @@
             </div>
           </div>
 
-          <!-- 計算表とキャンバスのレイアウト -->
-          <div class="row">
-            <!-- 左側：計算表 -->
-            <div class="col-lg-8 mb-4">
+          <!-- ★追加: 結果表示エリア（最初は非表示） -->
+          <div id="result-display-area" class="alert alert-success d-none mb-4 text-center shadow-sm border-0">
+            <h4 class="alert-heading mb-0 fw-bold">
+              <i class="bi bi-stars text-warning"></i> <ruby>結果<rt>けっか</rt></ruby>: 
+              <span id="main-result-score" class="text-primary fs-2 ms-2">-- / --</span> <ruby>問正解<rt>もんせいかい</rt></ruby> 
+              <span class="fs-5 text-muted ms-3">（タイム: <span id="main-result-time" class="text-danger fs-3">--</span> 秒）</span>
+            </h4>
+          </div>
+
+          <!-- 計算表と入力エリアのレイアウト -->
+          <div class="row" id="main-layout-row">
+            <!-- 左側（または右側）：計算表 -->
+            <div id="col-table" class="col-lg-8 mb-4">
               <div id="calc-table-container" class="calc-table-container"></div>
-            </div>
-            
-            <!-- 右側：手書きキャンバス -->
-            <div class="col-lg-4 mb-4">
-              <div class="d-flex justify-content-between align-items-center mb-2">
-                <label class="form-label fw-bold text-muted mb-0"><ruby>手書<rt>てが</rt></ruby>き入力</label>
-                <button class="btn btn-sm btn-outline-secondary rounded-pill" onclick="clearAllCanvas(true)">
-                  <i class="bi bi-eraser"></i> <ruby>消<rt>け</rt></ruby>す
+              
+              <!-- 自動採点オフ時用の「できた」ボタン -->
+              <div class="text-center mt-3">
+                <button id="manual-finish-btn" class="btn btn-giga btn-lg w-100" style="max-width: 300px; display: none;" onclick="finishGame()">
+                  <i class="bi bi-check-circle-fill"></i> できた！
                 </button>
               </div>
+            </div>
+            
+            <!-- 右側（または左側）：入力ツール -->
+            <div id="col-input" class="col-lg-4 mb-4">
               
-              <!-- 2つのキャンバスを並べる -->
-              <div class="d-flex justify-content-center gap-2">
-                <div class="drawing-canvas-container" style="flex: 1; height: 160px;">
-                  <canvas id="handwriting-canvas-1" style="width: 100%; height: 100%; display: block;"></canvas>
+              <!-- 手書きキャンバス領域 -->
+              <div id="handwriting-area">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <label class="form-label fw-bold text-muted mb-0"><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby></label>
+                  <button class="btn btn-sm btn-outline-secondary rounded-pill" onclick="clearAllCanvas(true)">
+                    <i class="bi bi-eraser"></i> <ruby>消<rt>け</rt></ruby>す
+                  </button>
                 </div>
-                <div class="drawing-canvas-container" style="flex: 1; height: 160px;">
-                  <canvas id="handwriting-canvas-2" style="width: 100%; height: 100%; display: block;"></canvas>
+                
+                <!-- 2つのキャンバスを並べる -->
+                <div class="d-flex justify-content-center gap-2">
+                  <div class="drawing-canvas-container" style="flex: 1; height: 160px;">
+                    <canvas id="handwriting-canvas-1" style="width: 100%; height: 100%; display: block;"></canvas>
+                  </div>
+                  <div class="drawing-canvas-container" style="flex: 1; height: 160px;">
+                    <canvas id="handwriting-canvas-2" style="width: 100%; height: 100%; display: block;"></canvas>
+                  </div>
+                </div>
+                <div class="d-flex justify-content-around mt-1">
+                   <small class="text-muted fw-bold"><ruby>十<rt>じゅう</rt></ruby>の<ruby>位<rt>くらい</rt></ruby></small>
+                   <small class="text-muted fw-bold"><ruby>一<rt>いち</rt></ruby>の<ruby>位<rt>くらい</rt></ruby></small>
+                </div>
+                
+                <div id="ocr-status" class="small text-muted text-center mt-2 fw-bold"></div>
+              </div>
+
+              <!-- ソフトウェア・テンキー領域 -->
+              <div id="numpad-area" class="mt-4" style="display: none;">
+                <label class="form-label fw-bold text-muted mb-2">ボタン入力</label>
+                <div class="d-grid gap-2" style="grid-template-columns: repeat(3, 1fr);">
+                  <button class="btn numpad-btn" onclick="inputNumpad('7')">7</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('8')">8</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('9')">9</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('4')">4</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('5')">5</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('6')">6</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('1')">1</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('2')">2</button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('3')">3</button>
+                  <button class="btn numpad-btn text-danger" onclick="inputNumpad('back')"><i class="bi bi-backspace-fill"></i></button>
+                  <button class="btn numpad-btn" onclick="inputNumpad('0')">0</button>
+                  <button class="btn numpad-btn numpad-btn-action" onclick="focusNextCell()">次へ <i class="bi bi-arrow-right"></i></button>
                 </div>
               </div>
-              <div class="d-flex justify-content-around mt-1">
-                 <small class="text-muted fw-bold">十の位</small>
-                 <small class="text-muted fw-bold">一の位</small>
-              </div>
-              
-              <div id="ocr-status" class="small text-muted text-center mt-2 fw-bold"></div>
+
             </div>
           </div>
 
-        </div>
-
-        <!-- ==========================================
-             ページ3: 結果画面
-        =========================================== -->
-        <div id="page-result" class="page text-center">
-          <h2 class="mb-4 h3 text-success fw-bold"><i class="bi bi-stars"></i> <ruby>結果<rt>けっか</rt></ruby>はっぴょう！</h2>
-          
-          <div class="bg-light rounded-3 p-4 mb-4 mx-auto" style="max-width: 400px;">
-            <div class="row g-3">
-              <div class="col-6">
-                <div class="text-muted small"><ruby>正解<rt>せいかい</rt></ruby></div>
-                <div class="fs-2 fw-bold text-primary" id="result-score">-- / --</div>
-              </div>
-              <div class="col-6 border-start">
-                <div class="text-muted small">タイム</div>
-                <div class="fs-2 fw-bold text-danger"><span id="result-time">--</span></div>
-              </div>
-            </div>
-          </div>
-
-          <button class="btn btn-giga btn-lg w-100 mb-3" style="max-width: 300px;" onclick="resetGame()">
-            <i class="bi bi-arrow-clockwise"></i> もういちど！
-          </button>
         </div>
 
       </div>
@@ -154,8 +170,60 @@
 
   </div>
 
+  <!-- 設定モーダル -->
+  <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content rounded-3 border-0 shadow">
+        <div class="modal-header bg-light">
+          <h5 class="modal-title fw-bold text-primary" id="settingsModalLabel"><i class="bi bi-gear-fill"></i> <ruby>設定<rt>せってい</rt></ruby></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body p-4">
+          
+          <div class="form-check form-switch mb-4">
+            <input class="form-check-input" type="checkbox" role="switch" id="setting-sound" style="transform: scale(1.2); margin-left: -2.5em;">
+            <label class="form-check-label fw-bold ms-2" for="setting-sound">音をならす</label>
+            <div class="form-text ms-2">正解した時などに効果音が鳴ります。</div>
+          </div>
+
+          <div class="form-check form-switch mb-4">
+            <input class="form-check-input" type="checkbox" role="switch" id="setting-handwriting" style="transform: scale(1.2); margin-left: -2.5em;">
+            <label class="form-check-label fw-bold ms-2" for="setting-handwriting">手書き入力を使う</label>
+            <div class="form-text ms-2">画面に直接数字を書いて入力できます。</div>
+          </div>
+
+          <div class="form-check form-switch mb-4">
+            <input class="form-check-input" type="checkbox" role="switch" id="setting-numpad" style="transform: scale(1.2); margin-left: -2.5em;">
+            <label class="form-check-label fw-bold ms-2" for="setting-numpad">ボタン入力を使う</label>
+            <div class="form-text ms-2">電卓のようなボタンで入力できます。</div>
+          </div>
+
+          <div class="form-check form-switch mb-4">
+            <input class="form-check-input" type="checkbox" role="switch" id="setting-autoScore" style="transform: scale(1.2); margin-left: -2.5em;">
+            <label class="form-check-label fw-bold ms-2" for="setting-autoScore">自動採点（すぐ判定）</label>
+            <div class="form-text ms-2">入力した瞬間に正解かわかります。オフにすると最後にまとめて採点します。</div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fw-bold ms-2">入力エリアの場所</label>
+            <select id="setting-position" class="form-select">
+              <option value="right">右側▶</option>
+              <option value="left">◀左側</option>
+            </select>
+          </div>
+
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-giga w-100" onclick="saveSettings()">保存して閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- SweetAlert2 JS -->
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.7.20/dist/sweetalert2.all.min.js"></script>
+  <!-- Bootstrap JS (Modal用に追加) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <!-- js.html の読み込み -->
   <?!= include('js'); ?>
 </body>
