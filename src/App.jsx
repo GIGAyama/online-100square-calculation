@@ -18,14 +18,14 @@ const initAudioContext = () => {
 const playSound = (type) => {
   if (!audioCtx) return;
   if (audioCtx.state === 'suspended') audioCtx.resume();
-  
+
   const osc = audioCtx.createOscillator();
   const gainNode = audioCtx.createGain();
   osc.connect(gainNode);
   gainNode.connect(audioCtx.destination);
 
   const now = audioCtx.currentTime;
-  
+
   if (type === 'correct') {
     osc.type = 'sine';
     osc.frequency.setValueAtTime(880, now);
@@ -100,9 +100,9 @@ const useHighResTimer = () => {
 // ==========================================
 // 🧩 コンポーネント: 最適化された個別のセル
 // ==========================================
-const Cell = memo(({ 
-  r, c, val, ans, isActive, disabled, autoScore, 
-  onFocus, onChange, onKeyDown, setInputRef 
+const Cell = memo(({
+  r, c, val, ans, isActive, disabled, autoScore,
+  onFocus, onChange, onKeyDown, setInputRef
 }) => {
   let cellClass = "";
   if (val !== '') {
@@ -121,7 +121,7 @@ const Cell = memo(({
     <td className={`border-2 border-slate-300 p-0 relative ${isActive ? 'ring-2 ring-slate-500 z-10' : ''}`}>
       <input
         ref={setInputRef}
-        key={`input-${flashKey}`} 
+        key={`input-${flashKey}`}
         type="tel"
         inputMode="numeric"
         value={val}
@@ -150,29 +150,29 @@ export default function App() {
   const [gameState, setGameState] = useState('idle');
   const [mode, setMode] = useState('たし算');
   const [count, setCount] = useState(10);
-  
+
   const timer = useHighResTimer();
-  
+
   const [tableData, setTableData] = useState({ rows: [], cols: [] });
   const [inputs, setInputs] = useState({});
   const [activeCell, setActiveCell] = useState(null);
-  
-  const [settings, setSettings] = useState({ 
-    sound: true, 
-    numpad: false, 
-    handwriting: true, 
+
+  const [settings, setSettings] = useState({
+    sound: true,
+    numpad: false,
+    handwriting: true,
     autoScore: true,
-    inputPosition: 'right' 
+    inputPosition: 'right'
   });
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
-  
+
   const [tfModel, setTfModel] = useState(null);
   const [aiStatus, setAiStatus] = useState(<span>AI<ruby>準備中<rt>じゅんびちゅう</rt></ruby>...</span>);
   const canvasRefs = [useRef(null), useRef(null)];
   const isDrawingRef = useRef([false, false]);
   const isDirtyRef = useRef([false, false]);
-  const lastPosRef = useRef([{x:0, y:0}, {x:0, y:0}]);
+  const lastPosRef = useRef([{ x: 0, y: 0 }, { x: 0, y: 0 }]);
   const ocrTimerRef = useRef(null);
 
   const [records, setRecords] = useState({
@@ -196,10 +196,10 @@ export default function App() {
 
     const savedSettings = localStorage.getItem('giga_calc_settings_v4');
     if (savedSettings) setSettings(JSON.parse(savedSettings));
-    
+
     const savedRecords = localStorage.getItem('giga_calc_records_v4');
     if (savedRecords) setRecords(JSON.parse(savedRecords));
-    
+
     generateTable(mode, count);
     initTensorFlow();
 
@@ -233,7 +233,7 @@ export default function App() {
   const loadModel = async () => {
     setAiStatus(<span>AIモデルを<ruby>読<rt>よ</rt></ruby>み<ruby>込<rt>こ</rt></ruby>み<ruby>中<rt>ちゅう</rt></ruby>...</span>);
     try {
-      const modelUrl = 'https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json';
+      const modelUrl = './model.json';
       const model = await window.tf.loadLayersModel(modelUrl);
       setTfModel(model);
       setAiStatus(<span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>が<ruby>使<rt>つか</rt></ruby>えます</span>);
@@ -246,10 +246,10 @@ export default function App() {
   const generateTable = useCallback((currentMode, currentCount) => {
     const colsCount = 10;
     const rowsCount = currentCount / 10;
-    
+
     const newCols = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
     const newRows = [];
-    
+
     for (let i = 0; i < rowsCount; i++) {
       if (currentMode === '引き算') {
         newRows.push(Math.floor(Math.random() * 10) + 10);
@@ -257,7 +257,7 @@ export default function App() {
         newRows.push(Math.floor(Math.random() * 10));
       }
     }
-    
+
     setTableData({ rows: newRows, cols: newCols });
     setInputs({});
     setGameState('idle');
@@ -282,7 +282,7 @@ export default function App() {
     setInputs({});
     setActiveCell({ r: 0, c: 0 });
     clearAllCanvas();
-    
+
     setTimeout(() => {
       if (inputRefs.current['0_0']) inputRefs.current['0_0'].focus();
     }, 100);
@@ -294,11 +294,11 @@ export default function App() {
     const exactTime = timer.stop();
     setGameState('result');
     if (settings.sound) playSound('finish');
-    
+
     if (finalScore === count) {
       const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
       const newRecord = { date: today, time: exactTime, count: count };
-      
+
       setRecords(prev => {
         const modeData = prev[mode];
         const newHistory = [newRecord, ...modeData.history].slice(0, 20);
@@ -336,7 +336,7 @@ export default function App() {
         }
       }
     }
-    
+
     if (answeredCount === count) {
       stopGame(correctCount);
     }
@@ -356,12 +356,12 @@ export default function App() {
 
   const handleInputChange = useCallback((r, c, value) => {
     if (gameState !== 'playing') return;
-    
+
     let val = value.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
-    
+
     const ans = getCorrectAnswer(r, c);
     const ansStr = String(ans);
-    
+
     let newInputs = { ...inputs, [`${r}_${c}`]: val };
 
     if (settings.autoScore && val.length > 0) {
@@ -375,7 +375,7 @@ export default function App() {
         clearAllCanvas();
       }
     }
-    
+
     setInputs(newInputs);
     setTimeout(() => checkCompletion(newInputs), 0);
   }, [gameState, inputs, getCorrectAnswer, settings, moveToNextCell, checkCompletion]);
@@ -391,16 +391,16 @@ export default function App() {
     } else if (e.key === 'ArrowRight') {
       e.preventDefault(); moveToNextCell(r, c);
     } else if (e.key === 'ArrowLeft') {
-      e.preventDefault(); 
+      e.preventDefault();
       let prevC = c - 1; let prevR = r;
       if (prevC < 0) { prevC = 9; prevR--; }
-      if (prevR >= 0) { setActiveCell({r: prevR, c: prevC}); inputRefs.current[`${prevR}_${prevC}`]?.focus(); }
+      if (prevR >= 0) { setActiveCell({ r: prevR, c: prevC }); inputRefs.current[`${prevR}_${prevC}`]?.focus(); }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (r + 1 < tableData.rows.length) { setActiveCell({r: r+1, c}); inputRefs.current[`${r+1}_${c}`]?.focus(); }
+      if (r + 1 < tableData.rows.length) { setActiveCell({ r: r + 1, c }); inputRefs.current[`${r + 1}_${c}`]?.focus(); }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      if (r - 1 >= 0) { setActiveCell({r: r-1, c}); inputRefs.current[`${r-1}_${c}`]?.focus(); }
+      if (r - 1 >= 0) { setActiveCell({ r: r - 1, c }); inputRefs.current[`${r - 1}_${c}`]?.focus(); }
     }
   }, [moveToNextCell, tableData]);
 
@@ -421,10 +421,10 @@ export default function App() {
     const rect = canvas.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    
+
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    
+
     return {
       x: (clientX - rect.left) * scaleX,
       y: (clientY - rect.top) * scaleY
@@ -437,7 +437,7 @@ export default function App() {
     isDrawingRef.current[i] = true;
     isDirtyRef.current[i] = true;
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
-    
+
     const pos = getCanvasPos(e, i);
     lastPosRef.current[i] = pos;
     drawOnCanvas(e, i);
@@ -447,28 +447,28 @@ export default function App() {
     if (!isDrawingRef.current[i]) return;
     e.preventDefault();
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
-    
+
     const canvas = canvasRefs[i].current;
     const ctx = canvas.getContext('2d');
     const pos = getCanvasPos(e, i);
-    
+
     ctx.lineWidth = 36;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = '#334155';
-    
+
     ctx.beginPath();
     ctx.moveTo(lastPosRef.current[i].x, lastPosRef.current[i].y);
     ctx.lineTo(pos.x, pos.y);
     ctx.stroke();
-    
+
     lastPosRef.current[i] = pos;
   };
 
   const stopDrawing = (e, i) => {
     if (!isDrawingRef.current[i]) return;
     isDrawingRef.current[i] = false;
-    
+
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
     ocrTimerRef.current = setTimeout(recognizeHandwriting, 800);
   };
@@ -504,13 +504,13 @@ export default function App() {
     const sCtx = sourceCanvas.getContext('2d');
     const imgData = sCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
     const data = imgData.data;
-    
+
     let minX = sourceCanvas.width, minY = sourceCanvas.height, maxX = 0, maxY = 0;
     let found = false;
     for (let y = 0; y < sourceCanvas.height; y++) {
       for (let x = 0; x < sourceCanvas.width; x++) {
         const idx = (y * sourceCanvas.width + x) * 4;
-        if (data[idx+3] > 0 && data[idx] < 128) { 
+        if (data[idx + 3] > 0 && data[idx] < 128) {
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
@@ -524,7 +524,7 @@ export default function App() {
     const bWidth = maxX - minX + 1;
     const bHeight = maxY - minY + 1;
     const size = Math.max(bWidth, bHeight);
-    const padding = size * 0.25; 
+    const padding = size * 0.25;
     const paddedSize = size + padding * 2;
 
     const tmpCanvas = document.createElement('canvas');
@@ -533,7 +533,7 @@ export default function App() {
     const tmpCtx = tmpCanvas.getContext('2d');
     tmpCtx.fillStyle = '#ffffff';
     tmpCtx.fillRect(0, 0, paddedSize, paddedSize);
-    
+
     const dx = padding + (size - bWidth) / 2;
     const dy = padding + (size - bHeight) / 2;
     tmpCtx.drawImage(sourceCanvas, minX, minY, bWidth, bHeight, dx, dy, bWidth, bHeight);
@@ -548,16 +548,16 @@ export default function App() {
     const input = new Float32Array(28 * 28);
     for (let i = 0; i < 28 * 28; i++) {
       const r = resizedData[i * 4];
-      input[i] = (255 - r) / 255.0; 
+      input[i] = (255 - r) / 255.0;
     }
     return window.tf.tensor4d(input, [1, 28, 28, 1]);
   };
 
   const recognizeHandwriting = async () => {
     if (!settings.handwriting || !tfModel || !window.tf || !activeCell) return;
-    
+
     let finalNumberStr = "";
-    
+
     for (let i = 0; i < 2; i++) {
       if (isDirtyRef.current[i]) {
         const tensor = preprocessCanvas(canvasRefs[i].current);
@@ -570,11 +570,11 @@ export default function App() {
 
           tensor.dispose();
           output.dispose();
-          
+
           if (probability > 0.4) {
             finalNumberStr += String(digit);
           }
-        } catch(e) { console.error("推論エラー", e); }
+        } catch (e) { console.error("推論エラー", e); }
       }
     }
 
@@ -628,10 +628,10 @@ export default function App() {
 
       {/* 🟡 メインエリア */}
       <main className={`flex-grow w-full max-w-6xl p-4 md:p-6 flex flex-col gap-6 items-start ${settings.inputPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'}`}>
-        
+
         {/* 左側（または右側）：計算ボード */}
         <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-4 md:p-6">
-          
+
           <div className="flex flex-wrap justify-between items-end gap-4 mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
             <div className="flex gap-4">
               <div>
@@ -660,7 +660,7 @@ export default function App() {
                 </span>
                 <span className="text-sm text-slate-500"><span><ruby>秒<rt>びょう</rt></ruby></span></span>
               </div>
-              
+
               {gameState === 'idle' && (
                 <button onClick={startGame} className="btn-press bg-slate-700 text-white font-bold py-2 px-6 rounded-xl shadow-sm flex items-center gap-2 hover:bg-slate-800">
                   <Play className="w-5 h-5 fill-current" /> <span>スタート！</span>
@@ -711,7 +711,7 @@ export default function App() {
                           disabled={gameState !== 'playing'}
                           autoScore={settings.autoScore}
                           onFocus={handleCellFocus}
-                          onChange={handleInputChange} 
+                          onChange={handleInputChange}
                           onKeyDown={handleCellKeyDown}
                           setInputRef={el => inputRefs.current[`${r}_${c}`] = el}
                         />
@@ -726,7 +726,7 @@ export default function App() {
 
         {/* 右側（または左側）：入力支援ツール (手書き / テンキー) */}
         <div className="w-full lg:w-80 flex flex-col gap-4 sticky top-20">
-          
+
           {/* 🖌️ 手書き入力エリア */}
           {settings.handwriting && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
@@ -735,10 +735,10 @@ export default function App() {
                   <PenTool className="w-4 h-4" /> <span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby></span>
                 </h3>
                 <button onClick={clearAllCanvas} className="btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold">
-                  <Eraser className="w-4 h-4"/> <span><ruby>消<rt>け</rt></ruby>す</span>
+                  <Eraser className="w-4 h-4" /> <span><ruby>消<rt>け</rt></ruby>す</span>
                 </button>
               </div>
-              
+
               <div className="flex justify-center gap-3 mb-2">
                 {[0, 1].map(i => (
                   <div key={i} className="flex-1 border-4 border-slate-200 rounded-2xl overflow-hidden bg-slate-50 touch-none" style={{ height: '160px' }}>
@@ -779,7 +779,7 @@ export default function App() {
                 <button onClick={() => handleNumpadInput('0')} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
                   0
                 </button>
-                <button onClick={() => {if(activeCell) moveToNextCell(activeCell.r, activeCell.c)}} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
+                <button onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c) }} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
                   <span><ruby>次<rt>つぎ</rt></ruby>へ</span> <ArrowRight className="w-5 h-5 ml-1" />
                 </button>
               </div>
@@ -798,57 +798,57 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out]">
             <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-              <h3 className="font-bold text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-600"/> <span><ruby>設定<rt>せってい</rt></ruby></span></h3>
-              <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6"/></button>
+              <h3 className="font-bold text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-600" /> <span><ruby>設定<rt>せってい</rt></ruby></span></h3>
+              <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
             </div>
             <div className="p-4 flex flex-col gap-4">
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
-                  {settings.sound ? <Volume2 className="w-5 h-5 text-blue-600"/> : <VolumeX className="w-5 h-5 text-slate-400"/>}
+                  {settings.sound ? <Volume2 className="w-5 h-5 text-blue-600" /> : <VolumeX className="w-5 h-5 text-slate-400" />}
                   <div>
                     <div className="font-bold text-slate-700"><span><ruby>音<rt>おと</rt></ruby>を<ruby>鳴<rt>な</rt></ruby>らす</span></div>
                     <div className="text-xs text-slate-500"><span><ruby>正解<rt>せいかい</rt></ruby>した<ruby>時<rt>とき</rt></ruby>に<ruby>音<rt>おと</rt></ruby>が<ruby>鳴<rt>な</rt></ruby>ります</span></div>
                   </div>
                 </div>
-                <input type="checkbox" checked={settings.sound} onChange={(e) => setSettings({...settings, sound: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+                <input type="checkbox" checked={settings.sound} onChange={(e) => setSettings({ ...settings, sound: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
               </label>
 
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
-                  <PenTool className="w-5 h-5 text-blue-600"/>
+                  <PenTool className="w-5 h-5 text-blue-600" />
                   <div>
                     <div className="font-bold text-slate-700"><span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>を<ruby>使<rt>つか</rt></ruby>う</span></div>
                     <div className="text-xs text-slate-500"><span><ruby>画面<rt>がめん</rt></ruby>に<ruby>文字<rt>もじ</rt></ruby>を<ruby>書<rt>か</rt></ruby>いて<ruby>入力<rt>にゅうりょく</rt></ruby>します</span></div>
                   </div>
                 </div>
-                <input type="checkbox" checked={settings.handwriting} onChange={(e) => setSettings({...settings, handwriting: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+                <input type="checkbox" checked={settings.handwriting} onChange={(e) => setSettings({ ...settings, handwriting: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
               </label>
 
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
-                  <Keyboard className="w-5 h-5 text-blue-600"/>
+                  <Keyboard className="w-5 h-5 text-blue-600" />
                   <div>
                     <div className="font-bold text-slate-700"><span>ボタン<ruby>入力<rt>にゅうりょく</rt></ruby>を<ruby>使<rt>つか</rt></ruby>う</span></div>
                     <div className="text-xs text-slate-500"><span><ruby>画面<rt>がめん</rt></ruby>にテンキーを<ruby>表示<rt>ひょうじ</rt></ruby>します</span></div>
                   </div>
                 </div>
-                <input type="checkbox" checked={settings.numpad} onChange={(e) => setSettings({...settings, numpad: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+                <input type="checkbox" checked={settings.numpad} onChange={(e) => setSettings({ ...settings, numpad: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
               </label>
 
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
-                  <CheckCircle className="w-5 h-5 text-blue-600"/>
+                  <CheckCircle className="w-5 h-5 text-blue-600" />
                   <div>
                     <div className="font-bold text-slate-700"><span>すぐ<ruby>判定<rt>はんてい</rt></ruby>（<ruby>自動採点<rt>じどうさいてん</rt></ruby>）</span></div>
                     <div className="text-xs text-slate-500"><span><ruby>入力<rt>にゅうりょく</rt></ruby>した<ruby>瞬間<rt>しゅんかん</rt></ruby>に<ruby>丸<rt>まる</rt></ruby>つけをします</span></div>
                   </div>
                 </div>
-                <input type="checkbox" checked={settings.autoScore} onChange={(e) => setSettings({...settings, autoScore: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+                <input type="checkbox" checked={settings.autoScore} onChange={(e) => setSettings({ ...settings, autoScore: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
               </label>
-              
+
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
-                  <MoveHorizontal className="w-5 h-5 text-blue-600"/>
+                  <MoveHorizontal className="w-5 h-5 text-blue-600" />
                   <div>
                     <div className="font-bold text-slate-700"><span><ruby>入力<rt>にゅうりょく</rt></ruby>ツールの<ruby>位置<rt>いち</rt></ruby></span></div>
                     <div className="text-xs text-slate-500"><span><ruby>手書<rt>てが</rt></ruby>きやボタンの<ruby>場所<rt>ばしょ</rt></ruby>を<ruby>選<rt>えら</rt></ruby>びます</span></div>
@@ -856,7 +856,7 @@ export default function App() {
                 </div>
                 <select
                   value={settings.inputPosition || 'right'}
-                  onChange={(e) => setSettings({...settings, inputPosition: e.target.value})}
+                  onChange={(e) => setSettings({ ...settings, inputPosition: e.target.value })}
                   className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer"
                 >
                   <option value="right">右側</option>
@@ -876,19 +876,19 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col max-h-[90vh]">
             <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
-              <h3 className="font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-slate-600"/> <span>これまでの<ruby>記録<rt>きろく</rt></ruby></span></h3>
-              <button onClick={() => setShowStats(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6"/></button>
+              <h3 className="font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-slate-600" /> <span>これまでの<ruby>記録<rt>きろく</rt></ruby></span></h3>
+              <button onClick={() => setShowStats(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
             </div>
-            
+
             <div className="p-4 overflow-y-auto">
               {['たし算', '引き算', 'かけ算'].map(calcMode => (
                 <div key={calcMode} className="mb-6 last:mb-0">
                   <h4 className="font-bold text-lg text-slate-700 border-b-2 border-slate-200 pb-1 mb-3">
                     {calcMode === 'たし算' ? <span>たし<ruby>算<rt>ざん</rt></ruby></span> : calcMode === '引き算' ? <span><ruby>引<rt>ひ</rt></ruby>き<ruby>算<rt>ざん</rt></ruby></span> : <span>かけ<ruby>算<rt>ざん</rt></ruby></span>}
                   </h4>
-                  
+
                   <div className="bg-slate-50 rounded-xl p-3 mb-3 border border-slate-200">
-                    <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mb-2"><Trophy className="w-4 h-4"/> <span>ベストタイム</span></div>
+                    <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mb-2"><Trophy className="w-4 h-4" /> <span>ベストタイム</span></div>
                     <div className="flex gap-4 flex-wrap">
                       {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(c => records[calcMode].best[c] && (
                         <div key={`best-${c}`} className="bg-white px-2 py-1 rounded shadow-sm text-sm border border-slate-200">
@@ -900,7 +900,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="text-xs font-bold text-slate-400 flex items-center gap-1 mb-2"><History className="w-4 h-4"/> <span><ruby>最近<rt>さいきん</rt></ruby>の<ruby>記録<rt>きろく</rt></ruby>（20<ruby>回<rt>かい</rt></ruby>）</span></div>
+                  <div className="text-xs font-bold text-slate-400 flex items-center gap-1 mb-2"><History className="w-4 h-4" /> <span><ruby>最近<rt>さいきん</rt></ruby>の<ruby>記録<rt>きろく</rt></ruby>（20<ruby>回<rt>かい</rt></ruby>）</span></div>
                   {records[calcMode].history.length > 0 ? (
                     <ul className="space-y-2">
                       {records[calcMode].history.map((hist, i) => (
@@ -919,7 +919,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-            
+
             <div className="p-4 pt-0 shrink-0 mt-4">
               <button onClick={() => setShowStats(false)} className="w-full btn-press bg-slate-800 text-white font-bold py-3 rounded-xl hover:bg-slate-900"><span><ruby>閉<rt>と</rt></ruby>じる</span></button>
             </div>
