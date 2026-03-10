@@ -1,230 +1,55 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <base target="_top">
-  <meta charset="utf-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>100マス計算</title>
+  <!-- 配置したfaviconを読み込む設定 -->
+  <link rel="icon" type="image/png" href="./favicon.png" />
   
-  <!-- Bootstrap 5 CSS -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- Bootstrap Icons -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
-  <!-- SweetAlert2 CSS -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11.7.20/dist/sweetalert2.min.css">
-  
-  <!-- TensorFlow.js (安定版に変更) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0"></script>
-
-  <!-- css.html の読み込み -->
-  <?!= include('css'); ?>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body>
+  <div id="root"></div>
   
-  <div class="container py-4 mx-auto" style="max-width: 800px;">
+  <script type="text/babel" data-type="module">
+    // アイコンの準備
+    const { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal } = lucide;
+    const createIcon = (name) => ({ className, ...props }) => React.createElement('i', { className: `lucide-${name} ${className || ''}`, ...props, dangerouslySetInnerHTML: { __html: lucide.icons[name].toSvg() } });
     
-    <!-- アプリタイトル -->
-    <header class="text-center mb-4">
-      <h1 class="text-primary fw-bold">
-        <i class="bi bi-calculator"></i> 100マス<ruby>計算<rt>けいさん</rt></ruby>
-      </h1>
-    </header>
-
-    <!-- メインコンテンツ領域（カード） -->
-    <main class="card rounded-3 shadow-sm border-0">
-      <div class="card-body p-4">
-
-        <!-- ==========================================
-             メイン画面 (設定・プレイ・結果 すべてを統合)
-        =========================================== -->
-        <div id="page-main" class="page active">
-          
-          <!-- 上部コントロールパネル -->
-          <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 bg-light p-3 rounded-3">
-            <div class="d-flex gap-3 align-items-center mb-2 mb-md-0">
-              <div>
-                <label class="form-label fw-bold small text-muted mb-1"><ruby>計算<rt>けいさん</rt></ruby></label>
-                <select id="mode-select" class="form-select form-select-sm" style="width: 120px;" onchange="previewTable()">
-                  <option value="たし算">たし算</option>
-                  <option value="引き算">ひき算</option>
-                  <option value="かけ算">かけ算</option>
-                </select>
-              </div>
-              <div>
-                <label class="form-label fw-bold small text-muted mb-1"><ruby>問題数<rt>もんだいすう</rt></ruby></label>
-                <select id="count-select" class="form-select form-select-sm" style="width: 100px;" onchange="previewTable()">
-                  <option value="10">10問</option>
-                  <option value="20">20問</option>
-                  <option value="30">30問</option>
-                  <option value="40">40問</option>
-                  <option value="50">50問</option>
-                  <option value="60">60問</option>
-                  <option value="70">70問</option>
-                  <option value="80">80問</option>
-                  <option value="90">90問</option>
-                  <option value="100">100問</option>
-                </select>
-              </div>
-              
-              <!-- 設定ボタン -->
-              <div>
-                <label class="form-label fw-bold small text-muted mb-1">&nbsp;</label>
-                <button class="btn btn-sm btn-outline-secondary d-block" onclick="openSettings()">
-                  <i class="bi bi-gear-fill"></i> <ruby>設定<rt>せってい</rt></ruby>
-                </button>
-              </div>
-            </div>
-            
-            <div class="d-flex gap-3 align-items-center">
-              <div class="fs-4 fw-bold text-danger">
-                <i class="bi bi-stopwatch"></i> <span id="timer-display">0.0</span> <ruby>秒<rt>びょう</rt></ruby>
-              </div>
-              <button id="start-btn" class="btn btn-giga px-4" onclick="startGame()">
-                <i class="bi bi-play-circle-fill"></i> スタート！
-              </button>
-            </div>
-          </div>
-
-          <!-- ★追加: 結果表示エリア（最初は非表示） -->
-          <div id="result-display-area" class="alert alert-success d-none mb-4 text-center shadow-sm border-0">
-            <h4 class="alert-heading mb-0 fw-bold">
-              <i class="bi bi-stars text-warning"></i> <ruby>結果<rt>けっか</rt></ruby>: 
-              <span id="main-result-score" class="text-primary fs-2 ms-2">-- / --</span> <ruby>問正解<rt>もんせいかい</rt></ruby> 
-              <span class="fs-5 text-muted ms-3">（タイム: <span id="main-result-time" class="text-danger fs-3">--</span> 秒）</span>
-            </h4>
-          </div>
-
-          <!-- 計算表と入力エリアのレイアウト -->
-          <div class="row" id="main-layout-row">
-            <!-- 左側（または右側）：計算表 -->
-            <div id="col-table" class="col-lg-8 mb-4">
-              <div id="calc-table-container" class="calc-table-container"></div>
-              
-              <!-- 自動採点オフ時用の「できた」ボタン -->
-              <div class="text-center mt-3">
-                <button id="manual-finish-btn" class="btn btn-giga btn-lg w-100" style="max-width: 300px; display: none;" onclick="finishGame()">
-                  <i class="bi bi-check-circle-fill"></i> できた！
-                </button>
-              </div>
-            </div>
-            
-            <!-- 右側（または左側）：入力ツール -->
-            <div id="col-input" class="col-lg-4 mb-4">
-              
-              <!-- 手書きキャンバス領域 -->
-              <div id="handwriting-area">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                  <label class="form-label fw-bold text-muted mb-0"><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby></label>
-                  <button class="btn btn-sm btn-outline-secondary rounded-pill" onclick="clearAllCanvas(true)">
-                    <i class="bi bi-eraser"></i> <ruby>消<rt>け</rt></ruby>す
-                  </button>
-                </div>
-                
-                <!-- 2つのキャンバスを並べる -->
-                <div class="d-flex justify-content-center gap-2">
-                  <div class="drawing-canvas-container" style="flex: 1; height: 160px;">
-                    <canvas id="handwriting-canvas-1" style="width: 100%; height: 100%; display: block;"></canvas>
-                  </div>
-                  <div class="drawing-canvas-container" style="flex: 1; height: 160px;">
-                    <canvas id="handwriting-canvas-2" style="width: 100%; height: 100%; display: block;"></canvas>
-                  </div>
-                </div>
-                <div class="d-flex justify-content-around mt-1">
-                   <small class="text-muted fw-bold"><ruby>十<rt>じゅう</rt></ruby>の<ruby>位<rt>くらい</rt></ruby></small>
-                   <small class="text-muted fw-bold"><ruby>一<rt>いち</rt></ruby>の<ruby>位<rt>くらい</rt></ruby></small>
-                </div>
-                
-                <div id="ocr-status" class="small text-muted text-center mt-2 fw-bold"></div>
-              </div>
-
-              <!-- ソフトウェア・テンキー領域 -->
-              <div id="numpad-area" class="mt-4" style="display: none;">
-                <label class="form-label fw-bold text-muted mb-2">ボタン入力</label>
-                <div class="d-grid gap-2" style="grid-template-columns: repeat(3, 1fr);">
-                  <button class="btn numpad-btn" onclick="inputNumpad('7')">7</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('8')">8</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('9')">9</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('4')">4</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('5')">5</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('6')">6</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('1')">1</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('2')">2</button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('3')">3</button>
-                  <button class="btn numpad-btn text-danger" onclick="inputNumpad('back')"><i class="bi bi-backspace-fill"></i></button>
-                  <button class="btn numpad-btn" onclick="inputNumpad('0')">0</button>
-                  <button class="btn numpad-btn numpad-btn-action" onclick="focusNextCell()">次へ <i class="bi bi-arrow-right"></i></button>
-                </div>
-              </div>
-
-            </div>
-          </div>
-
-        </div>
-
-      </div>
-    </main>
-    
-    <!-- 固定フッター (ガイドライン完全一致) -->
-    <footer class="text-center text-muted py-3 mt-4 border-top">
-      <small>© 2026 100マス<ruby>計算<rt>けいさん</rt></ruby> <a href="https://note.com/cute_borage86" target="_blank" class="text-decoration-none text-muted">GIGA山</a></small>
-    </footer>
-
-  </div>
-
-  <!-- 設定モーダル -->
-  <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-      <div class="modal-content rounded-3 border-0 shadow">
-        <div class="modal-header bg-light">
-          <h5 class="modal-title fw-bold text-primary" id="settingsModalLabel"><i class="bi bi-gear-fill"></i> <ruby>設定<rt>せってい</rt></ruby></h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body p-4">
-          
-          <div class="form-check form-switch mb-4">
-            <input class="form-check-input" type="checkbox" role="switch" id="setting-sound" style="transform: scale(1.2); margin-left: -2.5em;">
-            <label class="form-check-label fw-bold ms-2" for="setting-sound">音をならす</label>
-            <div class="form-text ms-2">正解した時などに効果音が鳴ります。</div>
-          </div>
-
-          <div class="form-check form-switch mb-4">
-            <input class="form-check-input" type="checkbox" role="switch" id="setting-handwriting" style="transform: scale(1.2); margin-left: -2.5em;">
-            <label class="form-check-label fw-bold ms-2" for="setting-handwriting">手書き入力を使う</label>
-            <div class="form-text ms-2">画面に直接数字を書いて入力できます。</div>
-          </div>
-
-          <div class="form-check form-switch mb-4">
-            <input class="form-check-input" type="checkbox" role="switch" id="setting-numpad" style="transform: scale(1.2); margin-left: -2.5em;">
-            <label class="form-check-label fw-bold ms-2" for="setting-numpad">ボタン入力を使う</label>
-            <div class="form-text ms-2">電卓のようなボタンで入力できます。</div>
-          </div>
-
-          <div class="form-check form-switch mb-4">
-            <input class="form-check-input" type="checkbox" role="switch" id="setting-autoScore" style="transform: scale(1.2); margin-left: -2.5em;">
-            <label class="form-check-label fw-bold ms-2" for="setting-autoScore">自動採点（すぐ判定）</label>
-            <div class="form-text ms-2">入力した瞬間に正解かわかります。オフにすると最後にまとめて採点します。</div>
-          </div>
-
-          <div class="mb-3">
-            <label class="form-label fw-bold ms-2">入力エリアの場所</label>
-            <select id="setting-position" class="form-select">
-              <option value="right">右側▶</option>
-              <option value="left">◀左側</option>
-            </select>
-          </div>
-
-        </div>
-        <div class="modal-footer border-0">
-          <button type="button" class="btn btn-giga w-100" onclick="saveSettings()">保存して閉じる</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- SweetAlert2 JS -->
-  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.7.20/dist/sweetalert2.all.min.js"></script>
-  <!-- Bootstrap JS (Modal用に追加) -->
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-  <!-- js.html の読み込み -->
-  <?!= include('js'); ?>
+    window.Calculator = createIcon('calculator');
+    window.Settings = createIcon('settings');
+    window.Play = createIcon('play');
+    window.RefreshCw = createIcon('refresh-cw');
+    window.Trophy = createIcon('trophy');
+    window.History = createIcon('history');
+    window.X = createIcon('x');
+    window.CheckCircle = createIcon('check-circle');
+    window.Volume2 = createIcon('volume-2');
+    window.VolumeX = createIcon('volume-x');
+    window.Keyboard = createIcon('keyboard');
+    window.BarChart2 = createIcon('bar-chart-2');
+    window.Clock = createIcon('clock');
+    window.ArrowRight = createIcon('arrow-right');
+    window.PenTool = createIcon('pen-tool');
+    window.Eraser = createIcon('eraser');
+    window.MoveHorizontal = createIcon('move-horizontal');
+  </script>
+  
+  <!-- App.jsx を読み込んで表示する -->
+  <script type="text/babel" data-type="module" src="./App.jsx"></script>
+  
+  <script type="text/babel" data-type="module">
+    import App from './App.jsx';
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
 </body>
 </html>
