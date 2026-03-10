@@ -471,7 +471,7 @@ export default function App() {
     isDrawingRef.current[i] = false;
 
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
-    ocrTimerRef.current = setTimeout(recognizeHandwriting, 800);
+    ocrTimerRef.current = setTimeout(recognizeHandwriting, 400);
   };
 
   useEffect(() => {
