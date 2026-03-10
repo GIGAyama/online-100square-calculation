@@ -235,7 +235,7 @@ export default function App() {
     setAiStatus(<span>AIモデルを<ruby>読<rt>よ</rt></ruby>み<ruby>込<rt>こ</rt></ruby>み<ruby>中<rt>ちゅう</rt></ruby>...</span>);
     try {
       const modelUrl = './model.json';
-      const model = await window.tf.loadLayersModel(modelUrl);
+      const model = await window.tf.loadGraphModel(modelUrl);
       setTfModel(model);
       setAiStatus(<span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>が<ruby>使<rt>つか</rt></ruby>えます</span>);
     } catch (e) {
