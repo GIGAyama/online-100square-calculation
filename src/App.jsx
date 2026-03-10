@@ -3,6 +3,7 @@ import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle,
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
+// Last Deploy: 2026-03-10 20:56
 // ==========================================
 let audioCtx = null;
 
