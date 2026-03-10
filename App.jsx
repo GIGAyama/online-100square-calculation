@@ -1,0 +1,935 @@
+// 先頭のimport行を削除します（index.html側で用意するため）
+const { useState, useEffect, useRef, useCallback, memo } = React;
+// アイコンはwindowオブジェクトから取得
+const { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal } = window;
+
+// ==========================================
+// 🎵 効果音生成エンジン (Web Audio API)
+// ==========================================
+// ... (この部分は変更なしのため省略せずに残します)
+let audioCtx = null;
+
+const initAudioContext = () => {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+};
+
+const playSound = (type) => {
+  if (!audioCtx) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  
+  const osc = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  osc.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  
+  if (type === 'correct') {
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, now);
+    osc.frequency.setValueAtTime(1108.73, now + 0.1);
+    gainNode.gain.setValueAtTime(0.3, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  } else if (type === 'wrong') {
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(150, now);
+    gainNode.gain.setValueAtTime(0.3, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  } else if (type === 'finish') {
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(523.25, now);
+    osc.frequency.setValueAtTime(659.25, now + 0.1);
+    osc.frequency.setValueAtTime(783.99, now + 0.2);
+    osc.frequency.setValueAtTime(1046.50, now + 0.3);
+    gainNode.gain.setValueAtTime(0.4, now);
+    gainNode.gain.linearRampToValueAtTime(0, now + 0.8);
+    osc.start(now);
+    osc.stop(now + 0.8);
+  }
+};
+
+// ==========================================
+// ⚡ カスタムフック: 高精度＆軽量タイマー
+// ==========================================
+const useHighResTimer = () => {
+  const displayRef = useRef(null);
+  const startTimeRef = useRef(0);
+  const reqRef = useRef(null);
+  const [finalTime, setFinalTime] = useState(0);
+
+  const start = useCallback(() => {
+    startTimeRef.current = performance.now();
+    setFinalTime(0);
+    const update = () => {
+      const diff = (performance.now() - startTimeRef.current) / 1000;
+      if (displayRef.current) {
+        displayRef.current.textContent = diff.toFixed(1);
+      }
+      reqRef.current = requestAnimationFrame(update);
+    };
+    reqRef.current = requestAnimationFrame(update);
+  }, []);
+
+  const stop = useCallback(() => {
+    if (reqRef.current) cancelAnimationFrame(reqRef.current);
+    const final = (performance.now() - startTimeRef.current) / 1000;
+    setFinalTime(final);
+    if (displayRef.current) {
+      displayRef.current.textContent = final.toFixed(1);
+    }
+    return final;
+  }, []);
+
+  const reset = useCallback(() => {
+    if (reqRef.current) cancelAnimationFrame(reqRef.current);
+    setFinalTime(0);
+    if (displayRef.current) {
+      displayRef.current.textContent = "0.0";
+    }
+  }, []);
+
+  return { displayRef, start, stop, reset, finalTime };
+};
+
+// ==========================================
+// 🧩 コンポーネント: 最適化された個別のセル
+// ==========================================
+const Cell = memo(({ 
+  r, c, val, ans, isActive, disabled, autoScore, 
+  onFocus, onChange, onKeyDown, setInputRef 
+}) => {
+  let cellClass = "";
+  if (val !== '') {
+    if (parseInt(val, 10) === ans) cellClass = "cell-correct border-green-400";
+    else if (val.length >= String(ans).length) cellClass = "cell-wrong border-red-400";
+  }
+
+  const [flashKey, setFlashKey] = useState(0);
+  useEffect(() => {
+    if (val === '' && cellClass === '') {
+      setFlashKey(prev => prev + 1);
+    }
+  }, [val]);
+
+  return (
+    <td className={`border-2 border-slate-300 p-0 relative ${isActive ? 'ring-2 ring-slate-500 z-10' : ''}`}>
+      <input
+        ref={setInputRef}
+        key={`input-${flashKey}`} 
+        type="tel"
+        inputMode="numeric"
+        value={val}
+        disabled={disabled || (autoScore && parseInt(val, 10) === ans)}
+        onFocus={() => onFocus(r, c)}
+        onChange={(e) => onChange(r, c, e.target.value)}
+        onKeyDown={(e) => onKeyDown(e, r, c)}
+        className={`w-12 h-12 text-center text-lg font-bold outline-none bg-transparent transition-colors ${cellClass} ${val === '' && isActive ? 'cell-error-flash' : ''}`}
+        style={{ width: '100%', height: '100%' }}
+      />
+    </td>
+  );
+}, (prevProps, nextProps) => {
+  return (
+    prevProps.val === nextProps.val &&
+    prevProps.isActive === nextProps.isActive &&
+    prevProps.disabled === nextProps.disabled &&
+    prevProps.ans === nextProps.ans
+  );
+});
+
+// ==========================================
+// 🌟 メインアプリケーション
+// ==========================================
+export default function App() {
+  const [gameState, setGameState] = useState('idle');
+  const [mode, setMode] = useState('たし算');
+  const [count, setCount] = useState(10);
+  
+  const timer = useHighResTimer();
+  
+  const [tableData, setTableData] = useState({ rows: [], cols: [] });
+  const [inputs, setInputs] = useState({});
+  const [activeCell, setActiveCell] = useState(null);
+  
+  const [settings, setSettings] = useState({ 
+    sound: true, 
+    numpad: false, 
+    handwriting: true, 
+    autoScore: true,
+    inputPosition: 'right' 
+  });
+  const [showSettings, setShowSettings] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  
+  const [tfModel, setTfModel] = useState(null);
+  const [aiStatus, setAiStatus] = useState(<span>AI<ruby>準備中<rt>じゅんびちゅう</rt></ruby>...</span>);
+  const canvasRefs = [useRef(null), useRef(null)];
+  const isDrawingRef = useRef([false, false]);
+  const isDirtyRef = useRef([false, false]);
+  const lastPosRef = useRef([{x:0, y:0}, {x:0, y:0}]);
+  const ocrTimerRef = useRef(null);
+
+  const [records, setRecords] = useState({
+    'たし算': { best: {}, history: [] },
+    '引き算': { best: {}, history: [] },
+    'かけ算': { best: {}, history: [] },
+  });
+
+  const inputRefs = useRef({});
+
+  useEffect(() => {
+    const handleUserInteraction = () => {
+      initAudioContext();
+      window.removeEventListener('touchstart', handleUserInteraction);
+      window.removeEventListener('mousedown', handleUserInteraction);
+      window.removeEventListener('keydown', handleUserInteraction);
+    };
+    window.addEventListener('touchstart', handleUserInteraction);
+    window.addEventListener('mousedown', handleUserInteraction);
+    window.addEventListener('keydown', handleUserInteraction);
+
+    const savedSettings = localStorage.getItem('giga_calc_settings_v4');
+    if (savedSettings) setSettings(JSON.parse(savedSettings));
+    
+    const savedRecords = localStorage.getItem('giga_calc_records_v4');
+    if (savedRecords) setRecords(JSON.parse(savedRecords));
+    
+    generateTable(mode, count);
+    initTensorFlow();
+
+    return () => {
+      window.removeEventListener('touchstart', handleUserInteraction);
+      window.removeEventListener('mousedown', handleUserInteraction);
+      window.removeEventListener('keydown', handleUserInteraction);
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('giga_calc_settings_v4', JSON.stringify(settings));
+  }, [settings]);
+
+  useEffect(() => {
+    localStorage.setItem('giga_calc_records_v4', JSON.stringify(records));
+  }, [records]);
+
+  const initTensorFlow = () => {
+    if (!window.tf) {
+      const script = document.createElement('script');
+      script.src = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0";
+      script.async = true;
+      script.onload = loadModel;
+      document.body.appendChild(script);
+    } else {
+      loadModel();
+    }
+  };
+
+  const loadModel = async () => {
+    setAiStatus(<span>AIモデルを<ruby>読<rt>よ</rt></ruby>み<ruby>込<rt>こ</rt></ruby>み<ruby>中<rt>ちゅう</rt></ruby>...</span>);
+    try {
+      // ★ 変更点：同じフォルダにある model.json を読み込むように相対パスに変更
+      const modelUrl = './model.json';
+      const model = await window.tf.loadLayersModel(modelUrl);
+      setTfModel(model);
+      setAiStatus(<span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>が<ruby>使<rt>つか</rt></ruby>えます</span>);
+    } catch (e) {
+      console.error("TF初期化エラー:", e);
+      setAiStatus(<span>AIの<ruby>準備<rt>じゅんび</rt></ruby>に<ruby>失敗<rt>しっぱい</rt></ruby>しました</span>);
+    }
+  };
+
+  const generateTable = useCallback((currentMode, currentCount) => {
+    const colsCount = 10;
+    const rowsCount = currentCount / 10;
+    
+    const newCols = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
+    const newRows = [];
+    
+    for (let i = 0; i < rowsCount; i++) {
+      if (currentMode === '引き算') {
+        newRows.push(Math.floor(Math.random() * 10) + 10);
+      } else {
+        newRows.push(Math.floor(Math.random() * 10));
+      }
+    }
+    
+    setTableData({ rows: newRows, cols: newCols });
+    setInputs({});
+    setGameState('idle');
+    timer.reset();
+    clearAllCanvas();
+  }, [timer]);
+
+  const handleModeChange = (e) => {
+    setMode(e.target.value);
+    generateTable(e.target.value, count);
+  };
+
+  const handleCountChange = (e) => {
+    const newCount = parseInt(e.target.value, 10);
+    setCount(newCount);
+    generateTable(mode, newCount);
+  };
+
+  const startGame = () => {
+    initAudioContext();
+    setGameState('playing');
+    setInputs({});
+    setActiveCell({ r: 0, c: 0 });
+    clearAllCanvas();
+    
+    setTimeout(() => {
+      if (inputRefs.current['0_0']) inputRefs.current['0_0'].focus();
+    }, 100);
+
+    timer.start();
+  };
+
+  const stopGame = useCallback((finalScore) => {
+    const exactTime = timer.stop();
+    setGameState('result');
+    if (settings.sound) playSound('finish');
+    
+    if (finalScore === count) {
+      const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const newRecord = { date: today, time: exactTime, count: count };
+      
+      setRecords(prev => {
+        const modeData = prev[mode];
+        const newHistory = [newRecord, ...modeData.history].slice(0, 20);
+        let newBest = modeData.best[count];
+        if (!newBest || exactTime < newBest) {
+          newBest = exactTime;
+        }
+        return {
+          ...prev,
+          [mode]: { ...modeData, best: { ...modeData.best, [count]: newBest }, history: newHistory }
+        };
+      });
+    }
+  }, [count, mode, settings.sound, timer]);
+
+  const getCorrectAnswer = useCallback((r, c) => {
+    const rowVal = tableData.rows[r];
+    const colVal = tableData.cols[c];
+    if (mode === 'たし算') return rowVal + colVal;
+    if (mode === '引き算') return rowVal - colVal;
+    if (mode === 'かけ算') return rowVal * colVal;
+    return 0;
+  }, [mode, tableData]);
+
+  const checkCompletion = useCallback((newInputs) => {
+    let answeredCount = 0;
+    let correctCount = 0;
+    for (let r = 0; r < tableData.rows.length; r++) {
+      for (let c = 0; c < tableData.cols.length; c++) {
+        const ans = getCorrectAnswer(r, c);
+        const val = newInputs[`${r}_${c}`];
+        if (val !== undefined && val !== '') {
+          answeredCount++;
+          if (parseInt(val, 10) === ans) correctCount++;
+        }
+      }
+    }
+    
+    if (answeredCount === count) {
+      stopGame(correctCount);
+    }
+  }, [count, getCorrectAnswer, stopGame, tableData]);
+
+  const moveToNextCell = useCallback((r, c) => {
+    let nextC = c + 1;
+    let nextR = r;
+    if (nextC >= 10) { nextC = 0; nextR++; }
+    if (nextR < tableData.rows.length) {
+      setActiveCell({ r: nextR, c: nextC });
+      if (inputRefs.current[`${nextR}_${nextC}`]) {
+        inputRefs.current[`${nextR}_${nextC}`].focus();
+      }
+    }
+  }, [tableData]);
+
+  const handleInputChange = useCallback((r, c, value) => {
+    if (gameState !== 'playing') return;
+    
+    let val = value.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
+    
+    const ans = getCorrectAnswer(r, c);
+    const ansStr = String(ans);
+    
+    let newInputs = { ...inputs, [`${r}_${c}`]: val };
+
+    if (settings.autoScore && val.length > 0) {
+      if (parseInt(val, 10) === ans) {
+        if (settings.sound) playSound('correct');
+        moveToNextCell(r, c);
+        clearAllCanvas();
+      } else if (val.length >= ansStr.length) {
+        if (settings.sound) playSound('wrong');
+        newInputs[`${r}_${c}`] = '';
+        clearAllCanvas();
+      }
+    }
+    
+    setInputs(newInputs);
+    setTimeout(() => checkCompletion(newInputs), 0);
+  }, [gameState, inputs, getCorrectAnswer, settings, moveToNextCell, checkCompletion]);
+
+  const handleCellFocus = useCallback((r, c) => {
+    setActiveCell({ r, c });
+    clearAllCanvas();
+  }, []);
+
+  const handleCellKeyDown = useCallback((e, r, c) => {
+    if (e.key === 'Enter') {
+      moveToNextCell(r, c);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault(); moveToNextCell(r, c);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault(); 
+      let prevC = c - 1; let prevR = r;
+      if (prevC < 0) { prevC = 9; prevR--; }
+      if (prevR >= 0) { setActiveCell({r: prevR, c: prevC}); inputRefs.current[`${prevR}_${prevC}`]?.focus(); }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (r + 1 < tableData.rows.length) { setActiveCell({r: r+1, c}); inputRefs.current[`${r+1}_${c}`]?.focus(); }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (r - 1 >= 0) { setActiveCell({r: r-1, c}); inputRefs.current[`${r-1}_${c}`]?.focus(); }
+    }
+  }, [moveToNextCell, tableData]);
+
+  const handleNumpadInput = useCallback((num) => {
+    if (gameState !== 'playing' || !activeCell) return;
+    const { r, c } = activeCell;
+    const currentVal = inputs[`${r}_${c}`] || '';
+    if (num === 'back') {
+      handleInputChange(r, c, currentVal.slice(0, -1));
+    } else {
+      handleInputChange(r, c, currentVal + num);
+    }
+  }, [gameState, activeCell, inputs, handleInputChange]);
+
+  const getCanvasPos = (e, i) => {
+    const canvas = canvasRefs[i].current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  };
+
+  const startDrawing = (e, i) => {
+    if (gameState !== 'playing' || !settings.handwriting) return;
+    e.preventDefault();
+    isDrawingRef.current[i] = true;
+    isDirtyRef.current[i] = true;
+    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+    
+    const pos = getCanvasPos(e, i);
+    lastPosRef.current[i] = pos;
+    drawOnCanvas(e, i);
+  };
+
+  const drawOnCanvas = (e, i) => {
+    if (!isDrawingRef.current[i]) return;
+    e.preventDefault();
+    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+    
+    const canvas = canvasRefs[i].current;
+    const ctx = canvas.getContext('2d');
+    const pos = getCanvasPos(e, i);
+    
+    ctx.lineWidth = 36;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#334155';
+    
+    ctx.beginPath();
+    ctx.moveTo(lastPosRef.current[i].x, lastPosRef.current[i].y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    
+    lastPosRef.current[i] = pos;
+  };
+
+  const stopDrawing = (e, i) => {
+    if (!isDrawingRef.current[i]) return;
+    isDrawingRef.current[i] = false;
+    
+    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+    ocrTimerRef.current = setTimeout(recognizeHandwriting, 800);
+  };
+
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      stopDrawing(null, 0);
+      stopDrawing(null, 1);
+    };
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('touchend', handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('touchend', handleGlobalMouseUp);
+    };
+  }, []);
+
+  const clearAllCanvas = () => {
+    for (let i = 0; i < 2; i++) {
+      const canvas = canvasRefs[i].current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        isDirtyRef.current[i] = false;
+      }
+    }
+    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+  };
+
+  const preprocessCanvas = (sourceCanvas) => {
+    if (!window.tf) return null;
+    const sCtx = sourceCanvas.getContext('2d');
+    const imgData = sCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+    const data = imgData.data;
+    
+    let minX = sourceCanvas.width, minY = sourceCanvas.height, maxX = 0, maxY = 0;
+    let found = false;
+    for (let y = 0; y < sourceCanvas.height; y++) {
+      for (let x = 0; x < sourceCanvas.width; x++) {
+        const idx = (y * sourceCanvas.width + x) * 4;
+        if (data[idx+3] > 0 && data[idx] < 128) { 
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          found = true;
+        }
+      }
+    }
+    if (!found) return null;
+
+    const bWidth = maxX - minX + 1;
+    const bHeight = maxY - minY + 1;
+    const size = Math.max(bWidth, bHeight);
+    const padding = size * 0.25; 
+    const paddedSize = size + padding * 2;
+
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = paddedSize;
+    tmpCanvas.height = paddedSize;
+    const tmpCtx = tmpCanvas.getContext('2d');
+    tmpCtx.fillStyle = '#ffffff';
+    tmpCtx.fillRect(0, 0, paddedSize, paddedSize);
+    
+    const dx = padding + (size - bWidth) / 2;
+    const dy = padding + (size - bHeight) / 2;
+    tmpCtx.drawImage(sourceCanvas, minX, minY, bWidth, bHeight, dx, dy, bWidth, bHeight);
+
+    const resizedCanvas = document.createElement('canvas');
+    resizedCanvas.width = 28;
+    resizedCanvas.height = 28;
+    const resizedCtx = resizedCanvas.getContext('2d');
+    resizedCtx.drawImage(tmpCanvas, 0, 0, paddedSize, paddedSize, 0, 0, 28, 28);
+
+    const resizedData = resizedCtx.getImageData(0, 0, 28, 28).data;
+    const input = new Float32Array(28 * 28);
+    for (let i = 0; i < 28 * 28; i++) {
+      const r = resizedData[i * 4];
+      input[i] = (255 - r) / 255.0; 
+    }
+    return window.tf.tensor4d(input, [1, 28, 28, 1]);
+  };
+
+  const recognizeHandwriting = async () => {
+    if (!settings.handwriting || !tfModel || !window.tf || !activeCell) return;
+    
+    let finalNumberStr = "";
+    
+    for (let i = 0; i < 2; i++) {
+      if (isDirtyRef.current[i]) {
+        const tensor = preprocessCanvas(canvasRefs[i].current);
+        if (!tensor) continue;
+
+        try {
+          const output = tfModel.predict(tensor);
+          const digit = output.argMax(1).dataSync()[0];
+          const probability = output.max().dataSync()[0];
+
+          tensor.dispose();
+          output.dispose();
+          
+          if (probability > 0.4) {
+            finalNumberStr += String(digit);
+          }
+        } catch(e) { console.error("推論エラー", e); }
+      }
+    }
+
+    if (finalNumberStr.length > 0) {
+      setAiStatus(<span>「{finalNumberStr}」を<ruby>入力<rt>にゅうりょく</rt></ruby>しました</span>);
+      const { r, c } = activeCell;
+      handleInputChange(r, c, finalNumberStr);
+    } else {
+      setAiStatus(<span><ruby>数字<rt>すうじ</rt></ruby>がわかりませんでした</span>);
+      clearAllCanvas();
+    }
+  };
+
+  const operatorSymbol = mode === 'たし算' ? '+' : mode === '引き算' ? '-' : '×';
+
+  return (
+    <div className="min-h-screen bg-slate-100/50 text-slate-800 flex flex-col items-center">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap');
+        body { font-family: 'Zen Maru Gothic', sans-serif; }
+        .btn-press { transition: all 0.1s; }
+        .btn-press:active { transform: scale(0.95); }
+        .cell-correct { background-color: #dcfce7 !important; color: #166534; font-weight: bold; }
+        .cell-wrong { background-color: #fee2e2 !important; color: #991b1b; }
+        @keyframes errorFlash {
+          0% { background-color: #fca5a5; }
+          100% { background-color: transparent; }
+        }
+        .cell-error-flash {
+          animation: errorFlash 0.4s ease-out;
+        }
+        ruby { ruby-align: center; vertical-align: baseline; }
+        rt { font-size: 0.65em; color: #64748b; font-weight: 500; user-select: none; line-height: 0; }
+      `}</style>
+
+      {/* 🔴 ヘッダー */}
+      <nav className="w-full bg-white border-b-4 border-slate-600 px-6 py-2.5 flex justify-between items-center shadow-sm z-10 sticky top-0">
+        <div className="flex items-center gap-2 text-slate-700 font-bold text-xl">
+          <Calculator className="w-6 h-6" />
+          <span>100マス<ruby>計算<rt>けいさん</rt></ruby></span>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setShowStats(true)} className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="記録">
+            <BarChart2 className="w-5 h-5" />
+          </button>
+          <button onClick={() => setShowSettings(true)} className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="設定">
+            <Settings className="w-5 h-5" />
+          </button>
+        </div>
+      </nav>
+
+      {/* 🟡 メインエリア */}
+      <main className={`flex-grow w-full max-w-6xl p-4 md:p-6 flex flex-col gap-6 items-start ${settings.inputPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'}`}>
+        
+        {/* 左側（または右側）：計算ボード */}
+        <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-4 md:p-6">
+          
+          <div className="flex flex-wrap justify-between items-end gap-4 mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
+            <div className="flex gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1"><span><ruby>計算<rt>けいさん</rt></ruby></span></label>
+                <select value={mode} onChange={handleModeChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+                  <option value="たし算">たし算</option>
+                  <option value="引き算">引き算</option>
+                  <option value="かけ算">かけ算</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1"><span><ruby>問題数<rt>もんだいすう</rt></ruby></span></label>
+                <select value={count} onChange={handleCountChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+                  {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(n => (
+                    <option key={n} value={n}>{n}問</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="text-2xl font-bold text-slate-700 flex items-center gap-1 w-24 justify-end">
+                <Clock className="w-5 h-5 text-slate-400" />
+                <span ref={timer.displayRef} className={gameState === 'playing' ? 'text-blue-600 tabular-nums' : 'tabular-nums'}>
+                  {gameState === 'result' ? timer.finalTime.toFixed(1) : "0.0"}
+                </span>
+                <span className="text-sm text-slate-500"><span><ruby>秒<rt>びょう</rt></ruby></span></span>
+              </div>
+              
+              {gameState === 'idle' && (
+                <button onClick={startGame} className="btn-press bg-slate-700 text-white font-bold py-2 px-6 rounded-xl shadow-sm flex items-center gap-2 hover:bg-slate-800">
+                  <Play className="w-5 h-5 fill-current" /> <span>スタート！</span>
+                </button>
+              )}
+              {gameState === 'result' && (
+                <button onClick={() => generateTable(mode, count)} className="btn-press bg-blue-600 text-white font-bold py-2 px-6 rounded-xl shadow-sm flex items-center gap-2 hover:bg-blue-700">
+                  <RefreshCw className="w-5 h-5" /> <span>もう<ruby>一度<rt>いちど</rt></ruby></span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {gameState === 'result' && (
+            <div className="mb-6 bg-slate-100 border-2 border-slate-300 rounded-xl p-4 text-center animate-bounce">
+              <h2 className="text-xl font-bold text-slate-700 flex justify-center items-center gap-2">
+                <Trophy className="w-6 h-6 text-slate-500" /> <span>クリア！よく<ruby>頑張<rt>がんば</rt></ruby>ったね！</span>
+              </h2>
+              <p className="text-3xl font-bold text-slate-800 mt-2">
+                タイム: <span className="text-blue-600 tabular-nums">{timer.finalTime.toFixed(1)}</span> <span><ruby>秒<rt>びょう</rt></ruby></span>
+              </p>
+            </div>
+          )}
+
+          <div className="overflow-x-auto pb-4">
+            <table className="w-full border-collapse mx-auto bg-white" style={{ minWidth: 'max-content' }}>
+              <thead>
+                <tr>
+                  <th className="border-2 border-slate-300 bg-slate-200 text-slate-800 w-12 h-12 text-xl font-bold">{operatorSymbol}</th>
+                  {tableData.cols.map((num, i) => (
+                    <th key={`col-${i}`} className="border-2 border-slate-300 bg-slate-50 text-slate-700 w-12 h-12 text-lg font-bold">{num}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {tableData.rows.map((rowNum, r) => (
+                  <tr key={`row-${r}`}>
+                    <th className="border-2 border-slate-300 bg-slate-50 text-slate-700 w-12 h-12 text-lg font-bold">{rowNum}</th>
+                    {tableData.cols.map((colNum, c) => {
+                      const isActive = activeCell?.r === r && activeCell?.c === c;
+                      return (
+                        <Cell
+                          key={`cell-${r}-${c}`}
+                          r={r} c={c}
+                          val={inputs[`${r}_${c}`] || ''}
+                          ans={getCorrectAnswer(r, c)}
+                          isActive={isActive}
+                          disabled={gameState !== 'playing'}
+                          autoScore={settings.autoScore}
+                          onFocus={handleCellFocus}
+                          onChange={handleInputChange} 
+                          onKeyDown={handleCellKeyDown}
+                          setInputRef={el => inputRefs.current[`${r}_${c}`] = el}
+                        />
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* 右側（または左側）：入力支援ツール (手書き / テンキー) */}
+        <div className="w-full lg:w-80 flex flex-col gap-4 sticky top-20">
+          
+          {/* 🖌️ 手書き入力エリア */}
+          {settings.handwriting && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="text-sm font-bold text-slate-500 flex items-center gap-1">
+                  <PenTool className="w-4 h-4" /> <span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby></span>
+                </h3>
+                <button onClick={clearAllCanvas} className="btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold">
+                  <Eraser className="w-4 h-4"/> <span><ruby>消<rt>け</rt></ruby>す</span>
+                </button>
+              </div>
+              
+              <div className="flex justify-center gap-3 mb-2">
+                {[0, 1].map(i => (
+                  <div key={i} className="flex-1 border-4 border-slate-200 rounded-2xl overflow-hidden bg-slate-50 touch-none" style={{ height: '160px' }}>
+                    <canvas
+                      ref={canvasRefs[i]}
+                      width={320} height={320}
+                      className="w-full h-full block cursor-crosshair"
+                      onMouseDown={(e) => startDrawing(e, i)}
+                      onMouseMove={(e) => drawOnCanvas(e, i)}
+                      onMouseUp={(e) => stopDrawing(e, i)}
+                      onMouseOut={(e) => stopDrawing(e, i)}
+                      onTouchStart={(e) => startDrawing(e, i)}
+                      onTouchMove={(e) => drawOnCanvas(e, i)}
+                      onTouchEnd={(e) => stopDrawing(e, i)}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="text-center text-sm font-bold text-slate-500 mt-2 h-5">{aiStatus}</div>
+            </div>
+          )}
+
+          {/* ⌨️ ソフトウェアテンキー */}
+          {settings.numpad && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+              <h3 className="text-sm font-bold text-slate-500 mb-4 flex items-center gap-1">
+                <Keyboard className="w-4 h-4" /> <span>ボタン<ruby>入力<rt>にゅうりょく</rt></ruby></span>
+              </h3>
+              <div className="grid grid-cols-3 gap-3">
+                {[7, 8, 9, 4, 5, 6, 1, 2, 3].map(num => (
+                  <button key={num} onClick={() => handleNumpadInput(String(num))} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
+                    {num}
+                  </button>
+                ))}
+                <button onClick={() => handleNumpadInput('back')} className="btn-press h-16 bg-red-50 hover:bg-red-100 border-2 border-red-200 rounded-xl text-red-500 font-bold flex justify-center items-center shadow-sm text-lg">
+                  <span><ruby>消<rt>け</rt></ruby>す</span>
+                </button>
+                <button onClick={() => handleNumpadInput('0')} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
+                  0
+                </button>
+                <button onClick={() => {if(activeCell) moveToNextCell(activeCell.r, activeCell.c)}} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
+                  <span><ruby>次<rt>つぎ</rt></ruby>へ</span> <ArrowRight className="w-5 h-5 ml-1" />
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </main>
+
+      <footer className="w-full bg-white border-t border-slate-200 pt-3 pb-2 text-center text-sm text-slate-500 font-bold shadow-sm mt-auto">
+        © 2026 100マス計算 <a href="https://note.com/cute_borage86" target="_blank" rel="noopener noreferrer" className="text-slate-600 hover:underline">GIGA山</a>
+      </footer>
+
+      {/* ⚙️ 設定モーダル */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out]">
+            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
+              <h3 className="font-bold text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-600"/> <span><ruby>設定<rt>せってい</rt></ruby></span></h3>
+              <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6"/></button>
+            </div>
+            <div className="p-4 flex flex-col gap-4">
+              <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  {settings.sound ? <Volume2 className="w-5 h-5 text-blue-600"/> : <VolumeX className="w-5 h-5 text-slate-400"/>}
+                  <div>
+                    <div className="font-bold text-slate-700"><span><ruby>音<rt>おと</rt></ruby>を<ruby>鳴<rt>な</rt></ruby>らす</span></div>
+                    <div className="text-xs text-slate-500"><span><ruby>正解<rt>せいかい</rt></ruby>した<ruby>時<rt>とき</rt></ruby>に<ruby>音<rt>おと</rt></ruby>が<ruby>鳴<rt>な</rt></ruby>ります</span></div>
+                  </div>
+                </div>
+                <input type="checkbox" checked={settings.sound} onChange={(e) => setSettings({...settings, sound: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+              </label>
+
+              <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <PenTool className="w-5 h-5 text-blue-600"/>
+                  <div>
+                    <div className="font-bold text-slate-700"><span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>を<ruby>使<rt>つか</rt></ruby>う</span></div>
+                    <div className="text-xs text-slate-500"><span><ruby>画面<rt>がめん</rt></ruby>に<ruby>文字<rt>もじ</rt></ruby>を<ruby>書<rt>か</rt></ruby>いて<ruby>入力<rt>にゅうりょく</rt></ruby>します</span></div>
+                  </div>
+                </div>
+                <input type="checkbox" checked={settings.handwriting} onChange={(e) => setSettings({...settings, handwriting: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+              </label>
+
+              <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <Keyboard className="w-5 h-5 text-blue-600"/>
+                  <div>
+                    <div className="font-bold text-slate-700"><span>ボタン<ruby>入力<rt>にゅうりょく</rt></ruby>を<ruby>使<rt>つか</rt></ruby>う</span></div>
+                    <div className="text-xs text-slate-500"><span><ruby>画面<rt>がめん</rt></ruby>にテンキーを<ruby>表示<rt>ひょうじ</rt></ruby>します</span></div>
+                  </div>
+                </div>
+                <input type="checkbox" checked={settings.numpad} onChange={(e) => setSettings({...settings, numpad: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+              </label>
+
+              <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <CheckCircle className="w-5 h-5 text-blue-600"/>
+                  <div>
+                    <div className="font-bold text-slate-700"><span>すぐ<ruby>判定<rt>はんてい</rt></ruby>（<ruby>自動採点<rt>じどうさいてん</rt></ruby>）</span></div>
+                    <div className="text-xs text-slate-500"><span><ruby>入力<rt>にゅうりょく</rt></ruby>した<ruby>瞬間<rt>しゅんかん</rt></ruby>に<ruby>丸<rt>まる</rt></ruby>つけをします</span></div>
+                  </div>
+                </div>
+                <input type="checkbox" checked={settings.autoScore} onChange={(e) => setSettings({...settings, autoScore: e.target.checked})} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+              </label>
+              
+              <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <MoveHorizontal className="w-5 h-5 text-blue-600"/>
+                  <div>
+                    <div className="font-bold text-slate-700"><span><ruby>入力<rt>にゅうりょく</rt></ruby>ツールの<ruby>位置<rt>いち</rt></ruby></span></div>
+                    <div className="text-xs text-slate-500"><span><ruby>手書<rt>てが</rt></ruby>きやボタンの<ruby>場所<rt>ばしょ</rt></ruby>を<ruby>選<rt>えら</rt></ruby>びます</span></div>
+                  </div>
+                </div>
+                <select
+                  value={settings.inputPosition || 'right'}
+                  onChange={(e) => setSettings({...settings, inputPosition: e.target.value})}
+                  className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer"
+                >
+                  <option value="right">右側</option>
+                  <option value="left">左側</option>
+                </select>
+              </label>
+            </div>
+            <div className="p-4 pt-0">
+              <button onClick={() => setShowSettings(false)} className="w-full btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span><ruby>閉<rt>と</rt></ruby>じる</span></button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 📊 記録モーダル */}
+      {showStats && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col max-h-[90vh]">
+            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
+              <h3 className="font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-slate-600"/> <span>これまでの<ruby>記録<rt>きろく</rt></ruby></span></h3>
+              <button onClick={() => setShowStats(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6"/></button>
+            </div>
+            
+            <div className="p-4 overflow-y-auto">
+              {['たし算', '引き算', 'かけ算'].map(calcMode => (
+                <div key={calcMode} className="mb-6 last:mb-0">
+                  <h4 className="font-bold text-lg text-slate-700 border-b-2 border-slate-200 pb-1 mb-3">
+                    {calcMode === 'たし算' ? <span>たし<ruby>算<rt>ざん</rt></ruby></span> : calcMode === '引き算' ? <span><ruby>引<rt>ひ</rt></ruby>き<ruby>算<rt>ざん</rt></ruby></span> : <span>かけ<ruby>算<rt>ざん</rt></ruby></span>}
+                  </h4>
+                  
+                  <div className="bg-slate-50 rounded-xl p-3 mb-3 border border-slate-200">
+                    <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mb-2"><Trophy className="w-4 h-4"/> <span>ベストタイム</span></div>
+                    <div className="flex gap-4 flex-wrap">
+                      {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(c => records[calcMode].best[c] && (
+                        <div key={`best-${c}`} className="bg-white px-2 py-1 rounded shadow-sm text-sm border border-slate-200">
+                          <span className="text-slate-400 text-xs mr-1"><span>{c}<ruby>問<rt>もん</rt></ruby>:</span></span>
+                          <span className="font-bold text-blue-600"><span>{records[calcMode].best[c].toFixed(1)}<ruby>秒<rt>びょう</rt></ruby></span></span>
+                        </div>
+                      ))}
+                      {Object.keys(records[calcMode].best).length === 0 && <span className="text-sm text-slate-400"><span>まだ<ruby>記録<rt>きろく</rt></ruby>がありません</span></span>}
+                    </div>
+                  </div>
+
+                  <div className="text-xs font-bold text-slate-400 flex items-center gap-1 mb-2"><History className="w-4 h-4"/> <span><ruby>最近<rt>さいきん</rt></ruby>の<ruby>記録<rt>きろく</rt></ruby>（20<ruby>回<rt>かい</rt></ruby>）</span></div>
+                  {records[calcMode].history.length > 0 ? (
+                    <ul className="space-y-2">
+                      {records[calcMode].history.map((hist, i) => (
+                        <li key={i} className="flex justify-between items-center text-sm bg-white border border-slate-100 shadow-sm px-3 py-2 rounded-lg">
+                          <span className="text-slate-500">{hist.date}</span>
+                          <div>
+                            <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rt>もん</rt></ruby></span></span>
+                            <span className="font-bold text-slate-700 tabular-nums"><span>{hist.time.toFixed(1)}<ruby>秒<rt>びょう</rt></ruby></span></span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="text-sm text-slate-400 text-center py-2"><span>まだ<ruby>記録<rt>きろく</rt></ruby>がありません</span></div>
+                  )}
+                </div>
+              ))}
+            </div>
+            
+            <div className="p-4 pt-0 shrink-0 mt-4">
+              <button onClick={() => setShowStats(false)} className="w-full btn-press bg-slate-800 text-white font-bold py-3 rounded-xl hover:bg-slate-900"><span><ruby>閉<rt>と</rt></ruby>じる</span></button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
