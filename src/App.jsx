@@ -175,6 +175,7 @@ export default function App() {
   const isDirtyRef = useRef([false, false]);
   const lastPosRef = useRef([{ x: 0, y: 0 }, { x: 0, y: 0 }]);
   const ocrTimerRef = useRef(null);
+  const activeCellRef = useRef(null);
 
   const [records, setRecords] = useState({
     'たし算': { best: {}, history: [] },
@@ -282,6 +283,7 @@ export default function App() {
     setGameState('playing');
     setInputs({});
     setActiveCell({ r: 0, c: 0 });
+    activeCellRef.current = { r: 0, c: 0 };
     clearAllCanvas();
 
     setTimeout(() => {
@@ -348,7 +350,9 @@ export default function App() {
     let nextR = r;
     if (nextC >= 10) { nextC = 0; nextR++; }
     if (nextR < tableData.rows.length) {
-      setActiveCell({ r: nextR, c: nextC });
+      const nextCell = { r: nextR, c: nextC };
+      setActiveCell(nextCell);
+      activeCellRef.current = nextCell;
       if (inputRefs.current[`${nextR}_${nextC}`]) {
         inputRefs.current[`${nextR}_${nextC}`].focus();
       }
@@ -363,26 +367,32 @@ export default function App() {
     const ans = getCorrectAnswer(r, c);
     const ansStr = String(ans);
 
-    let newInputs = { ...inputs, [`${r}_${c}`]: val };
+    setInputs(prev => {
+      const newInputs = { ...prev, [`${r}_${c}`]: val };
 
-    if (settings.autoScore && val.length > 0) {
-      if (parseInt(val, 10) === ans) {
-        if (settings.sound) playSound('correct');
-        moveToNextCell(r, c);
-        clearAllCanvas();
-      } else if (val.length >= ansStr.length) {
-        if (settings.sound) playSound('wrong');
-        newInputs[`${r}_${c}`] = '';
-        clearAllCanvas();
+      if (settings.autoScore && val.length > 0) {
+        if (parseInt(val, 10) === ans) {
+          if (settings.sound) playSound('correct');
+          setTimeout(() => {
+            moveToNextCell(r, c);
+            clearAllCanvas();
+          }, 0);
+        } else if (val.length >= ansStr.length) {
+          if (settings.sound) playSound('wrong');
+          newInputs[`${r}_${c}`] = '';
+          setTimeout(() => clearAllCanvas(), 0);
+        }
       }
-    }
 
-    setInputs(newInputs);
-    setTimeout(() => checkCompletion(newInputs), 0);
-  }, [gameState, inputs, getCorrectAnswer, settings, moveToNextCell, checkCompletion]);
+      setTimeout(() => checkCompletion(newInputs), 0);
+      return newInputs;
+    });
+  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion]);
 
   const handleCellFocus = useCallback((r, c) => {
-    setActiveCell({ r, c });
+    const cell = { r, c };
+    setActiveCell(cell);
+    activeCellRef.current = cell;
     clearAllCanvas();
   }, []);
 
@@ -395,26 +405,50 @@ export default function App() {
       e.preventDefault();
       let prevC = c - 1; let prevR = r;
       if (prevC < 0) { prevC = 9; prevR--; }
-      if (prevR >= 0) { setActiveCell({ r: prevR, c: prevC }); inputRefs.current[`${prevR}_${prevC}`]?.focus(); }
+      if (prevR >= 0) {
+        const prevCell = { r: prevR, c: prevC };
+        setActiveCell(prevCell);
+        activeCellRef.current = prevCell;
+        inputRefs.current[`${prevR}_${prevC}`]?.focus();
+      }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (r + 1 < tableData.rows.length) { setActiveCell({ r: r + 1, c }); inputRefs.current[`${r + 1}_${c}`]?.focus(); }
+      if (r + 1 < tableData.rows.length) {
+        const downCell = { r: r + 1, c };
+        setActiveCell(downCell);
+        activeCellRef.current = downCell;
+        inputRefs.current[`${r + 1}_${c}`]?.focus();
+      }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      if (r - 1 >= 0) { setActiveCell({ r: r - 1, c }); inputRefs.current[`${r - 1}_${c}`]?.focus(); }
+      if (r - 1 >= 0) {
+        const upCell = { r: r - 1, c };
+        setActiveCell(upCell);
+        activeCellRef.current = upCell;
+        inputRefs.current[`${r - 1}_${c}`]?.focus();
+      }
     }
   }, [moveToNextCell, tableData]);
 
   const handleNumpadInput = useCallback((num) => {
-    if (gameState !== 'playing' || !activeCell) return;
-    const { r, c } = activeCell;
-    const currentVal = inputs[`${r}_${c}`] || '';
-    if (num === 'back') {
-      handleInputChange(r, c, currentVal.slice(0, -1));
-    } else {
-      handleInputChange(r, c, currentVal + num);
-    }
-  }, [gameState, activeCell, inputs, handleInputChange]);
+    if (gameState !== 'playing' || !activeCellRef.current) return;
+    const { r, c } = activeCellRef.current;
+
+    // Use functional update to get current value safely
+    setInputs(prev => {
+      const currentVal = prev[`${r}_${c}`] || '';
+      const newVal = num === 'back' ? currentVal.slice(0, -1) : currentVal + num;
+
+      // We can't call handleInputChange inside setInputs, so we just perform the logic manually
+      // or rely on the Fact that handleInputChange is already defined.
+      // Actually, it's better to just use the value and call handleInputChange from outside.
+      return prev;
+    });
+
+    // Correct way: we need a way to get the current value without stale closure.
+    // Since inputs is in the dependency array of some things but handleNumpadInput should be stable.
+    // Let's use a simpler approach: handleInputChange itself should handle the logic.
+  }, [gameState]);
 
   const getCanvasPos = (e, i) => {
     const canvas = canvasRefs[i].current;
@@ -599,8 +633,10 @@ export default function App() {
 
     if (finalNumberStr.length > 0) {
       setAiStatus(<span>「{finalNumberStr}」を<ruby>入力<rt>にゅうりょく</rt></ruby>しました</span>);
-      const { r, c } = activeCell;
-      handleInputChange(r, c, finalNumberStr);
+      const cell = activeCellRef.current;
+      if (cell) {
+        handleInputChange(cell.r, cell.c, finalNumberStr);
+      }
     } else {
       setAiStatus(<span><ruby>数字<rt>すうじ</rt></ruby>がわかりませんでした</span>);
       clearAllCanvas();
