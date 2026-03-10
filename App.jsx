@@ -1,12 +1,9 @@
-// 先頭のimport行を削除します（index.html側で用意するため）
-const { useState, useEffect, useRef, useCallback, memo } = React;
-// アイコンはwindowオブジェクトから取得
-const { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal } = window;
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal } from 'lucide-react';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
 // ==========================================
-// ... (この部分は変更なしのため省略せずに残します)
 let audioCtx = null;
 
 const initAudioContext = () => {
@@ -236,8 +233,7 @@ export default function App() {
   const loadModel = async () => {
     setAiStatus(<span>AIモデルを<ruby>読<rt>よ</rt></ruby>み<ruby>込<rt>こ</rt></ruby>み<ruby>中<rt>ちゅう</rt></ruby>...</span>);
     try {
-      // ★ 変更点：同じフォルダにある model.json を読み込むように相対パスに変更
-      const modelUrl = './model.json';
+      const modelUrl = 'https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json';
       const model = await window.tf.loadLayersModel(modelUrl);
       setTfModel(model);
       setAiStatus(<span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>が<ruby>使<rt>つか</rt></ruby>えます</span>);
