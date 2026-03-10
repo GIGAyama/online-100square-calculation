@@ -450,7 +450,7 @@ export default function App() {
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
 
     const canvas = canvasRefs[i].current;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const pos = getCanvasPos(e, i);
 
     ctx.lineWidth = 36;
@@ -479,13 +479,31 @@ export default function App() {
       stopDrawing(null, 0);
       stopDrawing(null, 1);
     };
+
+    // Passive listener issue fix
+    const canvases = canvasRefs.map(ref => ref.current);
+    const options = { passive: false };
+
+    canvases.forEach((canvas, i) => {
+      if (canvas) {
+        canvas.addEventListener('touchstart', (e) => startDrawing(e, i), options);
+        canvas.addEventListener('touchmove', (e) => drawOnCanvas(e, i), options);
+      }
+    });
+
     window.addEventListener('mouseup', handleGlobalMouseUp);
     window.addEventListener('touchend', handleGlobalMouseUp);
     return () => {
+      canvases.forEach((canvas, i) => {
+        if (canvas) {
+          canvas.removeEventListener('touchstart', (e) => startDrawing(e, i));
+          canvas.removeEventListener('touchmove', (e) => drawOnCanvas(e, i));
+        }
+      });
       window.removeEventListener('mouseup', handleGlobalMouseUp);
       window.removeEventListener('touchend', handleGlobalMouseUp);
     };
-  }, []);
+  }, [gameState, settings.handwriting]);
 
   const clearAllCanvas = () => {
     for (let i = 0; i < 2; i++) {
@@ -502,7 +520,7 @@ export default function App() {
 
   const preprocessCanvas = (sourceCanvas) => {
     if (!window.tf) return null;
-    const sCtx = sourceCanvas.getContext('2d');
+    const sCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
     const imgData = sCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
     const data = imgData.data;
 
@@ -751,9 +769,7 @@ export default function App() {
                       onMouseMove={(e) => drawOnCanvas(e, i)}
                       onMouseUp={(e) => stopDrawing(e, i)}
                       onMouseOut={(e) => stopDrawing(e, i)}
-                      onTouchStart={(e) => startDrawing(e, i)}
-                      onTouchMove={(e) => drawOnCanvas(e, i)}
-                      onTouchEnd={(e) => stopDrawing(e, i)}
+                    // Touch events are handled via standard addEventListener in useEffect for passive:false
                     />
                   </div>
                 ))}
