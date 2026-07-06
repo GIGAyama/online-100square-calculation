@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal } from 'lucide-react';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
-// Last Deploy: 2026-03-10 20:56
 // ==========================================
 let audioCtx = null;
 
@@ -55,6 +54,16 @@ const playSound = (type) => {
   }
 };
 
+// 偏りのないシャッフル (Fisher–Yates)
+const shuffle = (array) => {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+
 // ==========================================
 // ⚡ カスタムフック: 高精度＆軽量タイマー
 // ==========================================
@@ -95,7 +104,16 @@ const useHighResTimer = () => {
     }
   }, []);
 
-  return { displayRef, start, stop, reset, finalTime };
+  useEffect(() => {
+    return () => {
+      if (reqRef.current) cancelAnimationFrame(reqRef.current);
+    };
+  }, []);
+
+  return useMemo(
+    () => ({ displayRef, start, stop, reset, finalTime }),
+    [start, stop, reset, finalTime]
+  );
 };
 
 // ==========================================
@@ -103,7 +121,7 @@ const useHighResTimer = () => {
 // ==========================================
 const Cell = memo(({
   r, c, val, ans, isActive, disabled, autoScore,
-  onFocus, onChange, onKeyDown, setInputRef
+  onFocus, onChange, onKeyDown, inputRefs
 }) => {
   let cellClass = "";
   if (val !== '') {
@@ -111,18 +129,24 @@ const Cell = memo(({
     else if (val.length >= String(ans).length) cellClass = "cell-wrong border-red-400";
   }
 
-  const [flashKey, setFlashKey] = useState(0);
+  // 不正解で値がクリアされた時だけ赤くフラッシュさせる
+  // (remount させないので入力フォーカスは維持される)
+  const prevValRef = useRef(val);
+  const [flash, setFlash] = useState(false);
   useEffect(() => {
-    if (val === '' && cellClass === '') {
-      setFlashKey(prev => prev + 1);
+    const prevVal = prevValRef.current;
+    prevValRef.current = val;
+    if (prevVal !== '' && val === '' && !disabled) {
+      setFlash(true);
+      const t = setTimeout(() => setFlash(false), 400);
+      return () => clearTimeout(t);
     }
-  }, [val]);
+  }, [val, disabled]);
 
   return (
     <td className={`border-2 border-slate-300 p-0 relative ${isActive ? 'ring-2 ring-slate-500 z-10' : ''}`}>
       <input
-        ref={setInputRef}
-        key={`input-${flashKey}`}
+        ref={el => { inputRefs.current[`${r}_${c}`] = el; }}
         type="tel"
         inputMode="numeric"
         value={val}
@@ -130,17 +154,10 @@ const Cell = memo(({
         onFocus={() => onFocus(r, c)}
         onChange={(e) => onChange(r, c, e.target.value)}
         onKeyDown={(e) => onKeyDown(e, r, c)}
-        className={`w-12 h-12 text-center text-lg font-bold outline-none bg-transparent transition-colors ${cellClass} ${val === '' && isActive ? 'cell-error-flash' : ''}`}
+        className={`w-12 h-12 text-center text-lg font-bold outline-none bg-transparent transition-colors ${cellClass} ${flash ? 'cell-error-flash' : ''}`}
         style={{ width: '100%', height: '100%' }}
       />
     </td>
-  );
-}, (prevProps, nextProps) => {
-  return (
-    prevProps.val === nextProps.val &&
-    prevProps.isActive === nextProps.isActive &&
-    prevProps.disabled === nextProps.disabled &&
-    prevProps.ans === nextProps.ans
   );
 });
 
@@ -151,6 +168,7 @@ export default function App() {
   const [gameState, setGameState] = useState('idle');
   const [mode, setMode] = useState('たし算');
   const [count, setCount] = useState(10);
+  const [resultScore, setResultScore] = useState(null);
 
   const timer = useHighResTimer();
 
@@ -176,6 +194,8 @@ export default function App() {
   const lastPosRef = useRef([{ x: 0, y: 0 }, { x: 0, y: 0 }]);
   const ocrTimerRef = useRef(null);
   const activeCellRef = useRef(null);
+  // 最新の入力値をイベントハンドラから同期的に参照するためのミラー
+  const inputsRef = useRef({});
 
   const [records, setRecords] = useState({
     'たし算': { best: {}, history: [] },
@@ -196,11 +216,37 @@ export default function App() {
     window.addEventListener('mousedown', handleUserInteraction);
     window.addEventListener('keydown', handleUserInteraction);
 
-    const savedSettings = localStorage.getItem('giga_calc_settings_v4');
-    if (savedSettings) setSettings(JSON.parse(savedSettings));
+    // 保存データが壊れていてもアプリが起動できるようにする
+    try {
+      const savedSettings = localStorage.getItem('giga_calc_settings_v4');
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        setSettings(prev => ({ ...prev, ...parsed }));
+      }
+    } catch (e) {
+      console.error("設定の読み込みに失敗しました:", e);
+    }
 
-    const savedRecords = localStorage.getItem('giga_calc_records_v4');
-    if (savedRecords) setRecords(JSON.parse(savedRecords));
+    try {
+      const savedRecords = localStorage.getItem('giga_calc_records_v4');
+      if (savedRecords) {
+        const parsed = JSON.parse(savedRecords);
+        setRecords(prev => {
+          const merged = { ...prev };
+          for (const key of Object.keys(merged)) {
+            if (parsed[key]) {
+              merged[key] = {
+                best: parsed[key].best || {},
+                history: Array.isArray(parsed[key].history) ? parsed[key].history : []
+              };
+            }
+          }
+          return merged;
+        });
+      }
+    } catch (e) {
+      console.error("記録の読み込みに失敗しました:", e);
+    }
 
     generateTable(mode, count);
     initTensorFlow();
@@ -226,6 +272,9 @@ export default function App() {
       script.src = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0";
       script.async = true;
       script.onload = loadModel;
+      script.onerror = () => {
+        setAiStatus(<span>AIの<ruby>準備<rt>じゅんび</rt></ruby>に<ruby>失敗<rt>しっぱい</rt></ruby>しました</span>);
+      };
       document.body.appendChild(script);
     } else {
       loadModel();
@@ -245,11 +294,23 @@ export default function App() {
     }
   };
 
+  const clearAllCanvas = useCallback(() => {
+    for (let i = 0; i < 2; i++) {
+      const canvas = canvasRefs[i].current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        isDirtyRef.current[i] = false;
+      }
+    }
+    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+  }, []);
+
   const generateTable = useCallback((currentMode, currentCount) => {
-    const colsCount = 10;
     const rowsCount = currentCount / 10;
 
-    const newCols = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
+    const newCols = shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     const newRows = [];
 
     for (let i = 0; i < rowsCount; i++) {
@@ -262,10 +323,12 @@ export default function App() {
 
     setTableData({ rows: newRows, cols: newCols });
     setInputs({});
+    inputsRef.current = {};
     setGameState('idle');
+    setResultScore(null);
     timer.reset();
     clearAllCanvas();
-  }, [timer]);
+  }, [timer.reset, clearAllCanvas]);
 
   const handleModeChange = (e) => {
     setMode(e.target.value);
@@ -282,6 +345,8 @@ export default function App() {
     initAudioContext();
     setGameState('playing');
     setInputs({});
+    inputsRef.current = {};
+    setResultScore(null);
     setActiveCell({ r: 0, c: 0 });
     activeCellRef.current = { r: 0, c: 0 };
     clearAllCanvas();
@@ -296,6 +361,7 @@ export default function App() {
   const stopGame = useCallback((finalScore) => {
     const exactTime = timer.stop();
     setGameState('result');
+    setResultScore(finalScore);
     if (settings.sound) playSound('finish');
 
     if (finalScore === count) {
@@ -315,7 +381,7 @@ export default function App() {
         };
       });
     }
-  }, [count, mode, settings.sound, timer]);
+  }, [count, mode, settings.sound, timer.stop]);
 
   const getCorrectAnswer = useCallback((r, c) => {
     const rowVal = tableData.rows[r];
@@ -346,55 +412,58 @@ export default function App() {
   }, [count, getCorrectAnswer, stopGame, tableData]);
 
   const moveToNextCell = useCallback((r, c) => {
-    let nextC = c + 1;
+    // すぐ判定モードで既に正解済みのセルはスキップする
     let nextR = r;
-    if (nextC >= 10) { nextC = 0; nextR++; }
-    if (nextR < tableData.rows.length) {
-      const nextCell = { r: nextR, c: nextC };
-      setActiveCell(nextCell);
-      activeCellRef.current = nextCell;
-      if (inputRefs.current[`${nextR}_${nextC}`]) {
-        inputRefs.current[`${nextR}_${nextC}`].focus();
-      }
+    let nextC = c;
+    while (true) {
+      nextC++;
+      if (nextC >= 10) { nextC = 0; nextR++; }
+      if (nextR >= tableData.rows.length) return;
+      const val = inputsRef.current[`${nextR}_${nextC}`];
+      const alreadyCorrect = settings.autoScore && val !== undefined && val !== '' && parseInt(val, 10) === getCorrectAnswer(nextR, nextC);
+      if (!alreadyCorrect) break;
     }
-  }, [tableData]);
+    const nextCell = { r: nextR, c: nextC };
+    setActiveCell(nextCell);
+    activeCellRef.current = nextCell;
+    if (inputRefs.current[`${nextR}_${nextC}`]) {
+      inputRefs.current[`${nextR}_${nextC}`].focus();
+    }
+  }, [tableData, settings.autoScore, getCorrectAnswer]);
 
   const handleInputChange = useCallback((r, c, value) => {
     if (gameState !== 'playing') return;
 
-    let val = value.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
+    const val = value.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
 
     const ans = getCorrectAnswer(r, c);
     const ansStr = String(ans);
+    let storedVal = val;
 
-    setInputs(prev => {
-      const newInputs = { ...prev, [`${r}_${c}`]: val };
-
-      if (settings.autoScore && val.length > 0) {
-        if (parseInt(val, 10) === ans) {
-          if (settings.sound) playSound('correct');
-          setTimeout(() => {
-            moveToNextCell(r, c);
-            clearAllCanvas();
-          }, 0);
-        } else if (val.length >= ansStr.length) {
-          if (settings.sound) playSound('wrong');
-          newInputs[`${r}_${c}`] = '';
-          setTimeout(() => clearAllCanvas(), 0);
-        }
+    if (settings.autoScore && val.length > 0) {
+      if (parseInt(val, 10) === ans) {
+        if (settings.sound) playSound('correct');
+        moveToNextCell(r, c);
+        clearAllCanvas();
+      } else if (val.length >= ansStr.length) {
+        if (settings.sound) playSound('wrong');
+        storedVal = '';
+        clearAllCanvas();
       }
+    }
 
-      setTimeout(() => checkCompletion(newInputs), 0);
-      return newInputs;
-    });
-  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion]);
+    const newInputs = { ...inputsRef.current, [`${r}_${c}`]: storedVal };
+    inputsRef.current = newInputs;
+    setInputs(newInputs);
+    checkCompletion(newInputs);
+  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas]);
 
   const handleCellFocus = useCallback((r, c) => {
     const cell = { r, c };
     setActiveCell(cell);
     activeCellRef.current = cell;
     clearAllCanvas();
-  }, []);
+  }, [clearAllCanvas]);
 
   const handleCellKeyDown = useCallback((e, r, c) => {
     if (e.key === 'Enter') {
@@ -433,22 +502,10 @@ export default function App() {
   const handleNumpadInput = useCallback((num) => {
     if (gameState !== 'playing' || !activeCellRef.current) return;
     const { r, c } = activeCellRef.current;
-
-    // Use functional update to get current value safely
-    setInputs(prev => {
-      const currentVal = prev[`${r}_${c}`] || '';
-      const newVal = num === 'back' ? currentVal.slice(0, -1) : currentVal + num;
-
-      // We can't call handleInputChange inside setInputs, so we just perform the logic manually
-      // or rely on the Fact that handleInputChange is already defined.
-      // Actually, it's better to just use the value and call handleInputChange from outside.
-      return prev;
-    });
-
-    // Correct way: we need a way to get the current value without stale closure.
-    // Since inputs is in the dependency array of some things but handleNumpadInput should be stable.
-    // Let's use a simpler approach: handleInputChange itself should handle the logic.
-  }, [gameState]);
+    const currentVal = inputsRef.current[`${r}_${c}`] || '';
+    const newVal = num === 'back' ? currentVal.slice(0, -1) : currentVal + num;
+    handleInputChange(r, c, newVal);
+  }, [gameState, handleInputChange]);
 
   const getCanvasPos = (e, i) => {
     const canvas = canvasRefs[i].current;
@@ -484,6 +541,7 @@ export default function App() {
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
 
     const canvas = canvasRefs[i].current;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const pos = getCanvasPos(e, i);
 
@@ -505,51 +563,8 @@ export default function App() {
     isDrawingRef.current[i] = false;
 
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
-    ocrTimerRef.current = setTimeout(recognizeHandwriting, 400);
-  };
-
-  useEffect(() => {
-    const handleGlobalMouseUp = () => {
-      stopDrawing(null, 0);
-      stopDrawing(null, 1);
-    };
-
-    // Passive listener issue fix
-    const canvases = canvasRefs.map(ref => ref.current);
-    const options = { passive: false };
-
-    canvases.forEach((canvas, i) => {
-      if (canvas) {
-        canvas.addEventListener('touchstart', (e) => startDrawing(e, i), options);
-        canvas.addEventListener('touchmove', (e) => drawOnCanvas(e, i), options);
-      }
-    });
-
-    window.addEventListener('mouseup', handleGlobalMouseUp);
-    window.addEventListener('touchend', handleGlobalMouseUp);
-    return () => {
-      canvases.forEach((canvas, i) => {
-        if (canvas) {
-          canvas.removeEventListener('touchstart', (e) => startDrawing(e, i));
-          canvas.removeEventListener('touchmove', (e) => drawOnCanvas(e, i));
-        }
-      });
-      window.removeEventListener('mouseup', handleGlobalMouseUp);
-      window.removeEventListener('touchend', handleGlobalMouseUp);
-    };
-  }, [gameState, settings.handwriting]);
-
-  const clearAllCanvas = () => {
-    for (let i = 0; i < 2; i++) {
-      const canvas = canvasRefs[i].current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        isDirtyRef.current[i] = false;
-      }
-    }
-    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+    // ref 経由で常に最新の認識処理を呼ぶ（古い state を掴まないように）
+    ocrTimerRef.current = setTimeout(() => drawHandlersRef.current.recognizeHandwriting(), 400);
   };
 
   const preprocessCanvas = (sourceCanvas) => {
@@ -607,49 +622,99 @@ export default function App() {
   };
 
   const recognizeHandwriting = async () => {
-    if (!settings.handwriting || !tfModel || !window.tf || !activeCell) return;
+    const cell = activeCellRef.current;
+    if (!settings.handwriting || !tfModel || !window.tf || !cell) return;
 
     let finalNumberStr = "";
 
     for (let i = 0; i < 2; i++) {
       if (isDirtyRef.current[i]) {
-        const tensor = preprocessCanvas(canvasRefs[i].current);
-        if (!tensor) continue;
-
+        let tensor = null;
+        let output = null;
         try {
-          const output = tfModel.predict(tensor);
-          const digit = output.argMax(1).dataSync()[0];
-          const probability = output.max().dataSync()[0];
+          tensor = preprocessCanvas(canvasRefs[i].current);
+          if (!tensor) continue;
 
-          tensor.dispose();
-          output.dispose();
+          output = tfModel.predict(tensor);
+          // 中間テンサーを作らず一度だけ読み出す（メモリリーク防止）
+          const probs = output.dataSync();
+          let digit = 0;
+          let probability = 0;
+          for (let d = 0; d < probs.length; d++) {
+            if (probs[d] > probability) {
+              probability = probs[d];
+              digit = d;
+            }
+          }
 
           if (probability > 0.4) {
             finalNumberStr += String(digit);
           }
-        } catch (e) { console.error("推論エラー", e); }
+        } catch (e) {
+          console.error("推論エラー", e);
+        } finally {
+          if (tensor) tensor.dispose();
+          if (output && output.dispose) output.dispose();
+        }
       }
     }
 
     if (finalNumberStr.length > 0) {
       setAiStatus(<span>「{finalNumberStr}」を<ruby>入力<rt>にゅうりょく</rt></ruby>しました</span>);
-      const cell = activeCellRef.current;
-      if (cell) {
-        handleInputChange(cell.r, cell.c, finalNumberStr);
-      }
+      handleInputChange(cell.r, cell.c, finalNumberStr);
     } else {
       setAiStatus(<span><ruby>数字<rt>すうじ</rt></ruby>がわかりませんでした</span>);
       clearAllCanvas();
     }
   };
 
+  // 描画系ハンドラは毎レンダー作り直されるため、イベントリスナーからは
+  // ref 経由で常に最新の関数を呼び出す（古い closure によるバグ防止）
+  const drawHandlersRef = useRef({});
+  useEffect(() => {
+    drawHandlersRef.current = { startDrawing, drawOnCanvas, stopDrawing, recognizeHandwriting };
+  });
+
+  useEffect(() => {
+    if (!settings.handwriting) return;
+
+    const canvases = canvasRefs.map(ref => ref.current);
+    const options = { passive: false };
+
+    // 解除できるように同じ関数参照を保持する
+    const touchStartHandlers = canvases.map((_, i) => (e) => drawHandlersRef.current.startDrawing(e, i));
+    const touchMoveHandlers = canvases.map((_, i) => (e) => drawHandlersRef.current.drawOnCanvas(e, i));
+    const handleGlobalUp = () => {
+      drawHandlersRef.current.stopDrawing(null, 0);
+      drawHandlersRef.current.stopDrawing(null, 1);
+    };
+
+    canvases.forEach((canvas, i) => {
+      if (canvas) {
+        canvas.addEventListener('touchstart', touchStartHandlers[i], options);
+        canvas.addEventListener('touchmove', touchMoveHandlers[i], options);
+      }
+    });
+
+    window.addEventListener('mouseup', handleGlobalUp);
+    window.addEventListener('touchend', handleGlobalUp);
+    return () => {
+      canvases.forEach((canvas, i) => {
+        if (canvas) {
+          canvas.removeEventListener('touchstart', touchStartHandlers[i]);
+          canvas.removeEventListener('touchmove', touchMoveHandlers[i]);
+        }
+      });
+      window.removeEventListener('mouseup', handleGlobalUp);
+      window.removeEventListener('touchend', handleGlobalUp);
+    };
+  }, [settings.handwriting]);
+
   const operatorSymbol = mode === 'たし算' ? '+' : mode === '引き算' ? '-' : '×';
 
   return (
     <div className="min-h-screen bg-slate-100/50 text-slate-800 flex flex-col items-center">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap');
-        body { font-family: 'Zen Maru Gothic', sans-serif; }
         .btn-press { transition: all 0.1s; }
         .btn-press:active { transform: scale(0.95); }
         .cell-correct { background-color: #dcfce7 !important; color: #166534; font-weight: bold; }
@@ -732,7 +797,12 @@ export default function App() {
           {gameState === 'result' && (
             <div className="mb-6 bg-slate-100 border-2 border-slate-300 rounded-xl p-4 text-center animate-bounce">
               <h2 className="text-xl font-bold text-slate-700 flex justify-center items-center gap-2">
-                <Trophy className="w-6 h-6 text-slate-500" /> <span>クリア！よく<ruby>頑張<rt>がんば</rt></ruby>ったね！</span>
+                <Trophy className="w-6 h-6 text-slate-500" />
+                {resultScore === count ? (
+                  <span>クリア！よく<ruby>頑張<rt>がんば</rt></ruby>ったね！</span>
+                ) : (
+                  <span>おわり！<ruby>正解<rt>せいかい</rt></ruby> {resultScore} / {count}<ruby>問<rt>もん</rt></ruby></span>
+                )}
               </h2>
               <p className="text-3xl font-bold text-slate-800 mt-2">
                 タイム: <span className="text-blue-600 tabular-nums">{timer.finalTime.toFixed(1)}</span> <span><ruby>秒<rt>びょう</rt></ruby></span>
@@ -768,7 +838,7 @@ export default function App() {
                           onFocus={handleCellFocus}
                           onChange={handleInputChange}
                           onKeyDown={handleCellKeyDown}
-                          setInputRef={el => inputRefs.current[`${r}_${c}`] = el}
+                          inputRefs={inputRefs}
                         />
                       );
                     })}
