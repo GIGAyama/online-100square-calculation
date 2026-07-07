@@ -120,7 +120,7 @@ const useHighResTimer = () => {
 // 🧩 コンポーネント: 最適化された個別のセル
 // ==========================================
 const Cell = memo(({
-  r, c, val, ans, isActive, disabled, autoScore,
+  r, c, val, ans, isActive, disabled, autoScore, suppressOsKeyboard,
   onFocus, onChange, onKeyDown, inputRefs
 }) => {
   let cellClass = "";
@@ -147,8 +147,8 @@ const Cell = memo(({
     <td className={`border-2 border-slate-300 p-0 relative ${isActive ? 'ring-2 ring-slate-500 z-10' : ''}`}>
       <input
         ref={el => { inputRefs.current[`${r}_${c}`] = el; }}
-        type="tel"
-        inputMode="numeric"
+        type={suppressOsKeyboard ? 'text' : 'tel'}
+        inputMode={suppressOsKeyboard ? 'none' : 'numeric'}
         value={val}
         disabled={disabled || (autoScore && parseInt(val, 10) === ans)}
         onFocus={() => onFocus(r, c)}
@@ -194,6 +194,9 @@ export default function App() {
   const lastPosRef = useRef([{ x: 0, y: 0 }, { x: 0, y: 0 }]);
   const ocrTimerRef = useRef(null);
   const activeCellRef = useRef(null);
+  // 同一イベント内で checkCompletion が複数回呼ばれても
+  // stopGame（記録保存・効果音）が二重実行されないようにするガード
+  const runningRef = useRef(false);
   // 最新の入力値をイベントハンドラから同期的に参照するためのミラー
   const inputsRef = useRef({});
 
@@ -349,6 +352,7 @@ export default function App() {
     setResultScore(null);
     setActiveCell({ r: 0, c: 0 });
     activeCellRef.current = { r: 0, c: 0 };
+    runningRef.current = true;
     clearAllCanvas();
 
     setTimeout(() => {
@@ -359,6 +363,8 @@ export default function App() {
   };
 
   const stopGame = useCallback((finalScore) => {
+    if (!runningRef.current) return;
+    runningRef.current = false;
     const exactTime = timer.stop();
     setGameState('result');
     setResultScore(finalScore);
@@ -392,7 +398,9 @@ export default function App() {
     return 0;
   }, [mode, tableData]);
 
-  const checkCompletion = useCallback((newInputs) => {
+  // force: 入力途中でも「全マス回答済みなら採点してよい」とみなすか
+  // （Enter や「次へ」で明示的に確定した時に true）
+  const checkCompletion = useCallback((newInputs, force = false) => {
     let answeredCount = 0;
     let correctCount = 0;
     for (let r = 0; r < tableData.rows.length; r++) {
@@ -406,12 +414,23 @@ export default function App() {
       }
     }
 
-    if (answeredCount === count) {
+    if (settings.autoScore) {
+      // すぐ判定モードでは全マス正解で終了。
+      // 2桁の答えの1桁目を入力しただけで「全マス回答済み」と
+      // 誤判定して途中終了しないように、正解数だけで判定する
+      if (correctCount === count) {
+        stopGame(count);
+      }
+    } else if (answeredCount === count && force) {
       stopGame(correctCount);
     }
-  }, [count, getCorrectAnswer, stopGame, tableData]);
+  }, [count, getCorrectAnswer, stopGame, tableData, settings.autoScore]);
 
   const moveToNextCell = useCallback((r, c) => {
+    // 確定操作（Enter / 次へ / →）の時点で全マス回答済みなら採点する
+    checkCompletion(inputsRef.current, true);
+    if (!runningRef.current) return; // 採点でゲームが終了した
+
     // すぐ判定モードで既に正解済みのセルはスキップする
     let nextR = r;
     let nextC = c;
@@ -429,7 +448,7 @@ export default function App() {
     if (inputRefs.current[`${nextR}_${nextC}`]) {
       inputRefs.current[`${nextR}_${nextC}`].focus();
     }
-  }, [tableData, settings.autoScore, getCorrectAnswer]);
+  }, [tableData, settings.autoScore, getCorrectAnswer, checkCompletion]);
 
   const handleInputChange = useCallback((r, c, value) => {
     if (gameState !== 'playing') return;
@@ -455,7 +474,8 @@ export default function App() {
     const newInputs = { ...inputsRef.current, [`${r}_${c}`]: storedVal };
     inputsRef.current = newInputs;
     setInputs(newInputs);
-    checkCompletion(newInputs);
+    // 答えの桁数まで入力し終えたマスだけ「回答済み」として採点判定する
+    checkCompletion(newInputs, val.length >= ansStr.length);
   }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas]);
 
   const handleCellFocus = useCallback((r, c) => {
@@ -835,6 +855,7 @@ export default function App() {
                           isActive={isActive}
                           disabled={gameState !== 'playing'}
                           autoScore={settings.autoScore}
+                          suppressOsKeyboard={settings.numpad || settings.handwriting}
                           onFocus={handleCellFocus}
                           onChange={handleInputChange}
                           onKeyDown={handleCellKeyDown}
