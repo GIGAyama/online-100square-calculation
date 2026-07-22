@@ -120,7 +120,7 @@ const useHighResTimer = () => {
 // 🧩 コンポーネント: 最適化された個別のセル
 // ==========================================
 const Cell = memo(({
-  r, c, val, ans, isActive, disabled, autoScore, suppressOsKeyboard,
+  r, c, val, ans, isActive, disabled, autoScore, suppressOsKeyboard, ariaLabel,
   onFocus, onChange, onKeyDown, inputRefs
 }) => {
   let cellClass = "";
@@ -149,12 +149,15 @@ const Cell = memo(({
         ref={el => { inputRefs.current[`${r}_${c}`] = el; }}
         type={suppressOsKeyboard ? 'text' : 'tel'}
         inputMode={suppressOsKeyboard ? 'none' : 'numeric'}
+        autoComplete="off"
+        enterKeyHint="next"
+        aria-label={ariaLabel}
         value={val}
         disabled={disabled || (autoScore && parseInt(val, 10) === ans)}
         onFocus={() => onFocus(r, c)}
         onChange={(e) => onChange(r, c, e.target.value)}
         onKeyDown={(e) => onKeyDown(e, r, c)}
-        className={`w-12 h-12 text-center text-lg font-bold outline-none bg-transparent transition-colors ${cellClass} ${flash ? 'cell-error-flash' : ''}`}
+        className={`text-center font-bold outline-none bg-transparent transition-colors ${cellClass} ${flash ? 'cell-error-flash' : ''}`}
         style={{ width: '100%', height: '100%' }}
       />
     </td>
@@ -176,12 +179,23 @@ export default function App() {
   const [inputs, setInputs] = useState({});
   const [activeCell, setActiveCell] = useState(null);
 
-  const [settings, setSettings] = useState({
-    sound: true,
-    numpad: false,
-    handwriting: true,
-    autoScore: true,
-    inputPosition: 'right'
+  // localStorage から同期的に初期化する（初回レンダー時から保存済み設定を反映し、
+  // デフォルト値で一瞬描画される・TFが不要なのに読み込まれる、を防ぐ）
+  const [settings, setSettings] = useState(() => {
+    const defaults = {
+      sound: true,
+      numpad: false,
+      handwriting: true,
+      autoScore: true,
+      inputPosition: 'right'
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem('giga_calc_settings_v4') || 'null');
+      return saved ? { ...defaults, ...saved } : defaults;
+    } catch (e) {
+      console.error("設定の読み込みに失敗しました:", e);
+      return defaults;
+    }
   });
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
@@ -200,10 +214,28 @@ export default function App() {
   // 最新の入力値をイベントハンドラから同期的に参照するためのミラー
   const inputsRef = useRef({});
 
-  const [records, setRecords] = useState({
-    'たし算': { best: {}, history: [] },
-    '引き算': { best: {}, history: [] },
-    'かけ算': { best: {}, history: [] },
+  const [records, setRecords] = useState(() => {
+    const defaults = {
+      'たし算': { best: {}, history: [] },
+      '引き算': { best: {}, history: [] },
+      'かけ算': { best: {}, history: [] },
+    };
+    try {
+      const parsed = JSON.parse(localStorage.getItem('giga_calc_records_v4') || 'null');
+      if (parsed) {
+        for (const key of Object.keys(defaults)) {
+          if (parsed[key]) {
+            defaults[key] = {
+              best: parsed[key].best || {},
+              history: Array.isArray(parsed[key].history) ? parsed[key].history : []
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.error("記録の読み込みに失敗しました:", e);
+    }
+    return defaults;
   });
 
   const inputRefs = useRef({});
@@ -219,40 +251,7 @@ export default function App() {
     window.addEventListener('mousedown', handleUserInteraction);
     window.addEventListener('keydown', handleUserInteraction);
 
-    // 保存データが壊れていてもアプリが起動できるようにする
-    try {
-      const savedSettings = localStorage.getItem('giga_calc_settings_v4');
-      if (savedSettings) {
-        const parsed = JSON.parse(savedSettings);
-        setSettings(prev => ({ ...prev, ...parsed }));
-      }
-    } catch (e) {
-      console.error("設定の読み込みに失敗しました:", e);
-    }
-
-    try {
-      const savedRecords = localStorage.getItem('giga_calc_records_v4');
-      if (savedRecords) {
-        const parsed = JSON.parse(savedRecords);
-        setRecords(prev => {
-          const merged = { ...prev };
-          for (const key of Object.keys(merged)) {
-            if (parsed[key]) {
-              merged[key] = {
-                best: parsed[key].best || {},
-                history: Array.isArray(parsed[key].history) ? parsed[key].history : []
-              };
-            }
-          }
-          return merged;
-        });
-      }
-    } catch (e) {
-      console.error("記録の読み込みに失敗しました:", e);
-    }
-
     generateTable(mode, count);
-    initTensorFlow();
 
     return () => {
       window.removeEventListener('touchstart', handleUserInteraction);
@@ -268,6 +267,47 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('giga_calc_records_v4', JSON.stringify(records));
   }, [records]);
+
+  // 手書き入力が有効な時だけ TensorFlow.js (約1MB) を読み込む。
+  // 設定でオフにしているユーザーには余計な通信をさせない
+  const tfLoadStartedRef = useRef(false);
+  useEffect(() => {
+    if (settings.handwriting && !tfLoadStartedRef.current) {
+      tfLoadStartedRef.current = true;
+      initTensorFlow();
+    }
+  }, [settings.handwriting]);
+
+  // Esc キーでモーダルを閉じられるようにする
+  useEffect(() => {
+    if (!showSettings && !showStats) return;
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') {
+        setShowSettings(false);
+        setShowStats(false);
+      }
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [showSettings, showStats]);
+
+  // 画面幅に合わせてマスの大きさを自動計算し、
+  // スマホでも 11 列（見出し + 10 列）がなるべく1画面に収まるようにする
+  const gridWrapRef = useRef(null);
+  const [cellSize, setCellSize] = useState(48);
+  useEffect(() => {
+    const el = gridWrapRef.current;
+    if (!el) return;
+    const compute = () => {
+      // 26px = border-collapse された 2px 枠線 × 12 + 余裕ぶん
+      const size = Math.floor((el.clientWidth - 26) / 11);
+      setCellSize(Math.min(56, Math.max(26, size)));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const initTensorFlow = () => {
     if (!window.tf) {
@@ -732,11 +772,37 @@ export default function App() {
 
   const operatorSymbol = mode === 'たし算' ? '+' : mode === '引き算' ? '-' : '×';
 
+  // 正解済みマスの数（進み具合バナー用）
+  const solvedCount = useMemo(() => {
+    let n = 0;
+    for (let r = 0; r < tableData.rows.length; r++) {
+      for (let c = 0; c < tableData.cols.length; c++) {
+        const val = inputs[`${r}_${c}`];
+        if (val !== undefined && val !== '' && parseInt(val, 10) === getCorrectAnswer(r, c)) n++;
+      }
+    }
+    return n;
+  }, [inputs, tableData, getCorrectAnswer]);
+
   return (
     <div className="min-h-screen bg-slate-100/50 text-slate-800 flex flex-col items-center">
       <style>{`
+        /* ダブルタップズームを無効化してボタン連打の反応を良くする（パン・ピンチは可能なまま） */
+        body { touch-action: manipulation; }
+        * { -webkit-tap-highlight-color: transparent; }
         .btn-press { transition: all 0.1s; }
         .btn-press:active { transform: scale(0.95); }
+        /* マスの大きさは画面幅から計算した --cell 変数で一括制御する */
+        .sq-table th, .sq-table td {
+          width: var(--cell, 48px);
+          min-width: var(--cell, 48px);
+          height: var(--cell, 48px);
+          font-size: max(14px, calc(var(--cell, 48px) * 0.42));
+        }
+        .sq-table td input {
+          /* 16px 未満だと iOS Safari がフォーカス時に画面を自動ズームしてしまうため下限 16px */
+          font-size: max(16px, calc(var(--cell, 48px) * 0.42));
+        }
         .cell-correct { background-color: #dcfce7 !important; color: #166534; font-weight: bold; }
         .cell-wrong { background-color: #fee2e2 !important; color: #991b1b; }
         @keyframes errorFlash {
@@ -751,7 +817,7 @@ export default function App() {
       `}</style>
 
       {/* 🔴 ヘッダー */}
-      <nav className="w-full bg-white border-b-4 border-slate-600 px-6 py-2.5 flex justify-between items-center shadow-sm z-10 sticky top-0">
+      <nav className="w-full bg-white border-b-4 border-slate-600 px-3 sm:px-6 py-2.5 flex justify-between items-center shadow-sm z-30 sticky top-0">
         <div className="flex items-center gap-2 text-slate-700 font-bold text-xl">
           <Calculator className="w-6 h-6" />
           <span>100マス<ruby>計算<rt>けいさん</rt></ruby></span>
@@ -767,10 +833,10 @@ export default function App() {
       </nav>
 
       {/* 🟡 メインエリア */}
-      <main className={`flex-grow w-full max-w-6xl p-4 md:p-6 flex flex-col gap-6 items-start ${settings.inputPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'}`}>
+      <main className={`flex-grow w-full max-w-6xl p-2 sm:p-4 md:p-6 flex flex-col gap-4 md:gap-6 items-start ${settings.inputPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'}`}>
 
         {/* 左側（または右側）：計算ボード */}
-        <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-4 md:p-6">
+        <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-2 sm:p-4 md:p-6">
 
           <div className="flex flex-wrap justify-between items-end gap-4 mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
             <div className="flex gap-4">
@@ -830,20 +896,39 @@ export default function App() {
             </div>
           )}
 
-          <div className="overflow-x-auto pb-4">
-            <table className="w-full border-collapse mx-auto bg-white" style={{ minWidth: 'max-content' }}>
+          {/* 🔍 いま解いている計算のバナー：キーボードや手元でマスが隠れても
+              「何の計算をしているか」「あと何問か」が常にわかる */}
+          {gameState === 'playing' && activeCell && (
+            <div className="sticky top-[64px] z-20 mb-3 bg-blue-50/95 backdrop-blur-sm border-2 border-blue-200 rounded-xl px-3 sm:px-4 py-2 flex items-center justify-between gap-2 shadow-sm">
+              <div className="text-2xl sm:text-3xl font-bold text-slate-800 tabular-nums whitespace-nowrap">
+                {tableData.rows[activeCell.r]}
+                <span className="text-blue-600 mx-1.5">{operatorSymbol}</span>
+                {tableData.cols[activeCell.c]}
+                <span className="mx-1.5">=</span>
+                <span className="inline-block min-w-[2ch] border-b-4 border-blue-400 text-blue-700 text-center">
+                  {inputs[`${activeCell.r}_${activeCell.c}`] || <span className="text-blue-300">?</span>}
+                </span>
+              </div>
+              <div className="text-xs sm:text-sm font-bold text-slate-500 text-right whitespace-nowrap">
+                <span>のこり</span> <span className="text-lg sm:text-xl text-slate-700 tabular-nums">{count - solvedCount}</span> <span><ruby>問<rt>もん</rt></ruby></span>
+              </div>
+            </div>
+          )}
+
+          <div ref={gridWrapRef} className="overflow-x-auto pb-4">
+            <table className="sq-table w-full border-collapse mx-auto bg-white select-none" style={{ minWidth: 'max-content', '--cell': `${cellSize}px` }}>
               <thead>
                 <tr>
-                  <th className="border-2 border-slate-300 bg-slate-200 text-slate-800 w-12 h-12 text-xl font-bold">{operatorSymbol}</th>
+                  <th className="border-2 border-slate-300 bg-slate-200 text-slate-800 font-bold">{operatorSymbol}</th>
                   {tableData.cols.map((num, i) => (
-                    <th key={`col-${i}`} className="border-2 border-slate-300 bg-slate-50 text-slate-700 w-12 h-12 text-lg font-bold">{num}</th>
+                    <th key={`col-${i}`} className="border-2 border-slate-300 bg-slate-50 text-slate-700 font-bold">{num}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {tableData.rows.map((rowNum, r) => (
                   <tr key={`row-${r}`}>
-                    <th className="border-2 border-slate-300 bg-slate-50 text-slate-700 w-12 h-12 text-lg font-bold">{rowNum}</th>
+                    <th className="border-2 border-slate-300 bg-slate-50 text-slate-700 font-bold">{rowNum}</th>
                     {tableData.cols.map((colNum, c) => {
                       const isActive = activeCell?.r === r && activeCell?.c === c;
                       return (
@@ -852,6 +937,7 @@ export default function App() {
                           r={r} c={c}
                           val={inputs[`${r}_${c}`] || ''}
                           ans={getCorrectAnswer(r, c)}
+                          ariaLabel={`${rowNum} ${operatorSymbol} ${colNum}`}
                           isActive={isActive}
                           disabled={gameState !== 'playing'}
                           autoScore={settings.autoScore}
@@ -880,7 +966,7 @@ export default function App() {
                 <h3 className="text-sm font-bold text-slate-500 flex items-center gap-1">
                   <PenTool className="w-4 h-4" /> <span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby></span>
                 </h3>
-                <button onClick={clearAllCanvas} className="btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold">
+                <button onMouseDown={(e) => e.preventDefault()} onClick={clearAllCanvas} className="btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold">
                   <Eraser className="w-4 h-4" /> <span><ruby>消<rt>け</rt></ruby>す</span>
                 </button>
               </div>
@@ -912,18 +998,19 @@ export default function App() {
                 <Keyboard className="w-4 h-4" /> <span>ボタン<ruby>入力<rt>にゅうりょく</rt></ruby></span>
               </h3>
               <div className="grid grid-cols-3 gap-3">
+                {/* onMouseDown の preventDefault で、ボタンを押してもマスのフォーカスが外れないようにする */}
                 {[7, 8, 9, 4, 5, 6, 1, 2, 3].map(num => (
-                  <button key={num} onClick={() => handleNumpadInput(String(num))} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
+                  <button key={num} onMouseDown={(e) => e.preventDefault()} onClick={() => handleNumpadInput(String(num))} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
                     {num}
                   </button>
                 ))}
-                <button onClick={() => handleNumpadInput('back')} className="btn-press h-16 bg-red-50 hover:bg-red-100 border-2 border-red-200 rounded-xl text-red-500 font-bold flex justify-center items-center shadow-sm text-lg">
+                <button onMouseDown={(e) => e.preventDefault()} onClick={() => handleNumpadInput('back')} className="btn-press h-16 bg-red-50 hover:bg-red-100 border-2 border-red-200 rounded-xl text-red-500 font-bold flex justify-center items-center shadow-sm text-lg">
                   <span><ruby>消<rt>け</rt></ruby>す</span>
                 </button>
-                <button onClick={() => handleNumpadInput('0')} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
+                <button onMouseDown={(e) => e.preventDefault()} onClick={() => handleNumpadInput('0')} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
                   0
                 </button>
-                <button onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c) }} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
+                <button onMouseDown={(e) => e.preventDefault()} onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c) }} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
                   <span><ruby>次<rt>つぎ</rt></ruby>へ</span> <ArrowRight className="w-5 h-5 ml-1" />
                 </button>
               </div>
