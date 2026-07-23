@@ -291,23 +291,34 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleEsc);
   }, [showSettings, showStats]);
 
-  // 画面幅に合わせてマスの大きさを自動計算し、
-  // スマホでも 11 列（見出し + 10 列）がなるべく1画面に収まるようにする
+  // 画面の「幅」と「残りの高さ」の両方からマスの大きさを自動計算し、
+  // 横画面や 100 問モードでも全マスがスクロールなしで 1 画面に収まるようにする
   const gridWrapRef = useRef(null);
   const [cellSize, setCellSize] = useState(48);
   useEffect(() => {
     const el = gridWrapRef.current;
     if (!el) return;
     const compute = () => {
-      // 26px = border-collapse された 2px 枠線 × 12 + 余裕ぶん
-      const size = Math.floor((el.clientWidth - 26) / 11);
-      setCellSize(Math.min(56, Math.max(26, size)));
+      // 幅から: 11 列（見出し + 10 列）+ border-collapse された 2px 枠線 × 12
+      const byWidth = Math.floor((el.clientWidth - 26) / 11);
+      // 高さから: 表の上端〜画面下端までに (行数 + 見出し行) がすべて収まるサイズ
+      const rowsCount = tableData.rows.length + 1;
+      const availH = window.innerHeight - el.getBoundingClientRect().top - 16;
+      const byHeight = Math.floor((availH - (rowsCount + 1) * 2) / rowsCount);
+      const size = Math.min(56, byWidth, byHeight);
+      // 22px を下回るほど画面が小さい時だけスクロールにフォールバック
+      setCellSize(Math.max(22, size));
     };
     compute();
     const ro = new ResizeObserver(compute);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+    window.addEventListener('resize', compute);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', compute);
+    };
+    // gameState も依存に含める: 結果バナーの表示で表の上端位置が変わるため
+  }, [tableData, gameState]);
 
   const initTensorFlow = () => {
     if (!window.tf) {
@@ -816,72 +827,61 @@ export default function App() {
         rt { font-size: 0.65em; color: #64748b; font-weight: 500; user-select: none; line-height: 0; }
       `}</style>
 
-      {/* 🔴 ヘッダー */}
-      <nav className="w-full bg-white border-b-4 border-slate-600 px-3 sm:px-6 py-2.5 flex justify-between items-center shadow-sm z-30 sticky top-0">
-        <div className="flex items-center gap-2 text-slate-700 font-bold text-xl">
-          <Calculator className="w-6 h-6" />
-          <span>100マス<ruby>計算<rt>けいさん</rt></ruby></span>
+      {/* 🔴 ヘッダー（操作類をここに集約して、下の計算ボードの縦空間を最大化する） */}
+      <nav className="w-full bg-white border-b-4 border-slate-600 px-2 sm:px-4 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 shadow-sm z-30 sticky top-0">
+        <div className="flex items-center gap-1.5 text-slate-700 font-bold text-lg mr-auto">
+          <Calculator className="w-5 h-5" />
+          <span className="whitespace-nowrap">100マス<ruby>計算<rt>けいさん</rt></ruby></span>
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => setShowStats(true)} className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="記録">
+
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+          <select aria-label="計算の種類" value={mode} onChange={handleModeChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+            <option value="たし算">たし算</option>
+            <option value="引き算">引き算</option>
+            <option value="かけ算">かけ算</option>
+          </select>
+          <select aria-label="問題数" value={count} onChange={handleCountChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+            {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(n => (
+              <option key={n} value={n}>{n}問</option>
+            ))}
+          </select>
+
+          <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end">
+            <Clock className="w-4 h-4 text-slate-400" />
+            <span ref={timer.displayRef} className={gameState === 'playing' ? 'text-blue-600 tabular-nums' : 'tabular-nums'}>
+              {gameState === 'result' ? timer.finalTime.toFixed(1) : "0.0"}
+            </span>
+            <span className="text-xs text-slate-500"><span><ruby>秒<rt>びょう</rt></ruby></span></span>
+          </div>
+
+          {gameState === 'idle' && (
+            <button onClick={startGame} className="btn-press bg-slate-700 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-800 text-sm whitespace-nowrap">
+              <Play className="w-4 h-4 fill-current" /> <span>スタート！</span>
+            </button>
+          )}
+          {gameState === 'result' && (
+            <button onClick={() => generateTable(mode, count)} className="btn-press bg-blue-600 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-blue-700 text-sm whitespace-nowrap">
+              <RefreshCw className="w-4 h-4" /> <span>もう<ruby>一度<rt>いちど</rt></ruby></span>
+            </button>
+          )}
+
+          <button onClick={() => setShowStats(true)} className="p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="記録">
             <BarChart2 className="w-5 h-5" />
           </button>
-          <button onClick={() => setShowSettings(true)} className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="設定">
+          <button onClick={() => setShowSettings(true)} className="p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="設定">
             <Settings className="w-5 h-5" />
           </button>
         </div>
       </nav>
 
       {/* 🟡 メインエリア */}
-      <main className={`flex-grow w-full max-w-6xl p-2 sm:p-4 md:p-6 flex flex-col gap-4 md:gap-6 items-start ${settings.inputPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'}`}>
+      <main className={`flex-grow w-full max-w-6xl p-2 sm:p-3 flex flex-col gap-3 items-start ${settings.inputPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'}`}>
 
         {/* 左側（または右側）：計算ボード */}
-        <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-2 sm:p-4 md:p-6">
-
-          <div className="flex flex-wrap justify-between items-end gap-4 mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
-            <div className="flex gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1"><span><ruby>計算<rt>けいさん</rt></ruby></span></label>
-                <select value={mode} onChange={handleModeChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
-                  <option value="たし算">たし算</option>
-                  <option value="引き算">引き算</option>
-                  <option value="かけ算">かけ算</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1"><span><ruby>問題数<rt>もんだいすう</rt></ruby></span></label>
-                <select value={count} onChange={handleCountChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
-                  {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(n => (
-                    <option key={n} value={n}>{n}問</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4">
-              <div className="text-2xl font-bold text-slate-700 flex items-center gap-1 w-24 justify-end">
-                <Clock className="w-5 h-5 text-slate-400" />
-                <span ref={timer.displayRef} className={gameState === 'playing' ? 'text-blue-600 tabular-nums' : 'tabular-nums'}>
-                  {gameState === 'result' ? timer.finalTime.toFixed(1) : "0.0"}
-                </span>
-                <span className="text-sm text-slate-500"><span><ruby>秒<rt>びょう</rt></ruby></span></span>
-              </div>
-
-              {gameState === 'idle' && (
-                <button onClick={startGame} className="btn-press bg-slate-700 text-white font-bold py-2 px-6 rounded-xl shadow-sm flex items-center gap-2 hover:bg-slate-800">
-                  <Play className="w-5 h-5 fill-current" /> <span>スタート！</span>
-                </button>
-              )}
-              {gameState === 'result' && (
-                <button onClick={() => generateTable(mode, count)} className="btn-press bg-blue-600 text-white font-bold py-2 px-6 rounded-xl shadow-sm flex items-center gap-2 hover:bg-blue-700">
-                  <RefreshCw className="w-5 h-5" /> <span>もう<ruby>一度<rt>いちど</rt></ruby></span>
-                </button>
-              )}
-            </div>
-          </div>
+        <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-2 sm:p-3">
 
           {gameState === 'result' && (
-            <div className="mb-6 bg-slate-100 border-2 border-slate-300 rounded-xl p-4 text-center animate-bounce">
+            <div className="mb-3 bg-slate-100 border-2 border-slate-300 rounded-xl p-3 text-center">
               <h2 className="text-xl font-bold text-slate-700 flex justify-center items-center gap-2">
                 <Trophy className="w-6 h-6 text-slate-500" />
                 {resultScore === count ? (
@@ -890,32 +890,13 @@ export default function App() {
                   <span>おわり！<ruby>正解<rt>せいかい</rt></ruby> {resultScore} / {count}<ruby>問<rt>もん</rt></ruby></span>
                 )}
               </h2>
-              <p className="text-3xl font-bold text-slate-800 mt-2">
+              <p className="text-2xl font-bold text-slate-800 mt-1">
                 タイム: <span className="text-blue-600 tabular-nums">{timer.finalTime.toFixed(1)}</span> <span><ruby>秒<rt>びょう</rt></ruby></span>
               </p>
             </div>
           )}
 
-          {/* 🔍 いま解いている計算のバナー：キーボードや手元でマスが隠れても
-              「何の計算をしているか」「あと何問か」が常にわかる */}
-          {gameState === 'playing' && activeCell && (
-            <div className="sticky top-[64px] z-20 mb-3 bg-blue-50/95 backdrop-blur-sm border-2 border-blue-200 rounded-xl px-3 sm:px-4 py-2 flex items-center justify-between gap-2 shadow-sm">
-              <div className="text-2xl sm:text-3xl font-bold text-slate-800 tabular-nums whitespace-nowrap">
-                {tableData.rows[activeCell.r]}
-                <span className="text-blue-600 mx-1.5">{operatorSymbol}</span>
-                {tableData.cols[activeCell.c]}
-                <span className="mx-1.5">=</span>
-                <span className="inline-block min-w-[2ch] border-b-4 border-blue-400 text-blue-700 text-center">
-                  {inputs[`${activeCell.r}_${activeCell.c}`] || <span className="text-blue-300">?</span>}
-                </span>
-              </div>
-              <div className="text-xs sm:text-sm font-bold text-slate-500 text-right whitespace-nowrap">
-                <span>のこり</span> <span className="text-lg sm:text-xl text-slate-700 tabular-nums">{count - solvedCount}</span> <span><ruby>問<rt>もん</rt></ruby></span>
-              </div>
-            </div>
-          )}
-
-          <div ref={gridWrapRef} className="overflow-x-auto pb-4">
+          <div ref={gridWrapRef} className="overflow-x-auto pb-1">
             <table className="sq-table w-full border-collapse mx-auto bg-white select-none" style={{ minWidth: 'max-content', '--cell': `${cellSize}px` }}>
               <thead>
                 <tr>
@@ -957,7 +938,26 @@ export default function App() {
         </div>
 
         {/* 右側（または左側）：入力支援ツール (手書き / テンキー) */}
-        <div className="w-full lg:w-80 flex flex-col gap-4 sticky top-20">
+        <div className="w-full lg:w-80 flex flex-col gap-3 lg:sticky lg:top-14">
+
+          {/* 🔍 いま解いている計算：手書き・テンキーのすぐ上に表示して、
+              視線を動かさずに「何の計算をしているか」「あと何問か」がわかる */}
+          {gameState === 'playing' && activeCell && (
+            <div className="bg-blue-50 border-2 border-blue-200 rounded-xl px-3 sm:px-4 py-2 flex items-center justify-between gap-2 shadow-sm">
+              <div className="text-2xl sm:text-3xl font-bold text-slate-800 tabular-nums whitespace-nowrap">
+                {tableData.rows[activeCell.r]}
+                <span className="text-blue-600 mx-1.5">{operatorSymbol}</span>
+                {tableData.cols[activeCell.c]}
+                <span className="mx-1.5">=</span>
+                <span className="inline-block min-w-[2ch] border-b-4 border-blue-400 text-blue-700 text-center">
+                  {inputs[`${activeCell.r}_${activeCell.c}`] || <span className="text-blue-300">?</span>}
+                </span>
+              </div>
+              <div className="text-xs sm:text-sm font-bold text-slate-500 text-right whitespace-nowrap">
+                <span>のこり</span> <span className="text-lg sm:text-xl text-slate-700 tabular-nums">{count - solvedCount}</span> <span><ruby>問<rt>もん</rt></ruby></span>
+              </div>
+            </div>
+          )}
 
           {/* 🖌️ 手書き入力エリア */}
           {settings.handwriting && (
