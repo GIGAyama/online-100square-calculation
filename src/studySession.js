@@ -9,7 +9,7 @@
 import { saveStudyRecord } from './studyLog';
 
 // アプリのバージョンは package.json と揃えて、この1箇所だけで管理する
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 export const APP_ID = 'square100';
 
 // 内部で使っている日本語のモード名 → 集計用の英数小文字。
@@ -58,16 +58,34 @@ const getCellStat = (session, key) => {
   return stat;
 };
 
+export const allCellKeys = (rows, cols) => {
+  const keys = [];
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < cols.length; c++) keys.push(`${r}_${c}`);
+  }
+  return keys;
+};
+
 /**
  * セッションを開始する。
  * performance.now() は経過時間の計測にしか使えないため、
  * startedAt は Date から ISO 8601（タイムゾーン付き）で別途生成する（§2.8）。
+ *
+ * @param cells         マスの総数。unit.id と ext.cells に使う（盤面が同じなら不変）
+ * @param scope         このレコードが受け持つマスのキー配列。
+ *                      省略時は全マス。中断からの復帰時は残りのマスだけを渡す（§5.4）
+ * @param startOffsetSec このセッションが始まった時点の、画面タイマーの経過秒。
+ *                      復帰後のレコードが「離れていた時間」を含まないようにする
  */
-export function createStudySession({ mode, count, rows, cols, autoScore, input }) {
+export function createStudySession({ mode, cells, rows, cols, autoScore, input, scope, startOffsetSec = 0 }) {
+  const keys = scope || allCellKeys(rows, cols);
   return {
     startedAt: new Date().toISOString(),
     mode,
-    count,
+    cells,
+    count: keys.length,
+    scope: new Set(keys),
+    startOffsetSec,
     rows,
     cols,
     autoScore,
@@ -134,6 +152,8 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
   for (let r = 0; r < session.rows.length; r++) {
     for (let c = 0; c < session.cols.length; c++) {
       const key = `${r}_${c}`;
+      // 復帰後のレコードは、そのとき残っていたマスだけを受け持つ
+      if (!session.scope.has(key)) continue;
       const ans = answerOf(session.mode, session.rows[r], session.cols[c]);
       const finalVal = inputs[key];
       const ok = finalVal !== undefined && finalVal !== '' && parseInt(finalVal, 10) === ans;
@@ -166,8 +186,10 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
   // ありえない値が生じうるため、保存前に必ず抑え込む（§2.8）
   const clampedActiveMs = Math.min(Math.round(activeMs), roundedElapsedMs);
 
-  // ext.bestMs は今回の記録も含めた現時点のベストタイム
-  const isNewBest = status === 'completed' && correct === session.count
+  // ext.bestMs は今回の記録も含めた現時点のベストタイム。
+  // 盤面の途中から始まったレコード（復帰後）のタイムはベストにならない
+  const wholeBoard = session.count === session.cells;
+  const isNewBest = status === 'completed' && wholeBoard && correct === session.count
     && (prevBestSec === undefined || elapsedMs / 1000 < prevBestSec);
   const bestSec = isNewBest ? elapsedMs / 1000 : prevBestSec;
 
@@ -178,8 +200,9 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
     kind: 'session',
     mode: modeId,
     unit: {
-      id: `${modeId}-${session.count}`,
-      title: `${session.mode} ${session.count}マス`,
+      // マス数は盤面の大きさ。復帰後のレコードでも同じ単元に属するよう count は使わない
+      id: `${modeId}-${session.cells}`,
+      title: `${session.mode} ${session.cells}マス`,
       preset: true,
     },
     source: 'course',
@@ -202,7 +225,7 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
     ext: {
       autoScore: session.autoScore,
       input: session.input,
-      cells: session.count,
+      cells: session.cells,
       bestMs: bestSec !== undefined ? Math.round(bestSec * 1000) : null,
       // items を持たない簡易集計でも、つまずいた式を辿れるようにする冗長データ
       wrongItems: [...session.wrongOnce]
