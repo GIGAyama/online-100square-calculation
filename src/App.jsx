@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame } from 'lucide-react';
 import {
-  APP_ID, MODE_ID, answerOf, inputMethodOf,
+  APP_ID, MODE_ID, answerOf, inputMethodOf, allCellKeys,
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
 } from './studySession';
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
@@ -314,6 +314,18 @@ export default function App() {
   const recordsRef = useRef(records);
   useEffect(() => { recordsRef.current = records; }, [records]);
 
+  // pagehide / pageshow は張り替えずに最新の状態を読む必要があるためミラーを持つ
+  const tableDataRef = useRef(tableData);
+  const modeRef = useRef(mode);
+  const countRef = useRef(count);
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    tableDataRef.current = tableData;
+    modeRef.current = mode;
+    countRef.current = count;
+    settingsRef.current = settings;
+  });
+
   useEffect(() => {
     const handleUserInteraction = () => {
       initAudioContext();
@@ -445,16 +457,18 @@ export default function App() {
   // 組み立てとスキーマの詳細は studySession.js を参照。
   // ここではセッションの開始・終了と、アプリ側の値の受け渡しだけを行う。
   // status: 'completed' | 'aborted'
+  // exactTimeSec は画面タイマーの経過秒。復帰後のレコードは
+  // セッション開始時点からの分だけを elapsedMs とする
   const saveSession = useCallback((status, exactTimeSec) => {
     const session = sessionRef.current;
     if (!session) return;
     sessionRef.current = null;
     finalizeStudySession(session, {
       status,
-      elapsedMs: exactTimeSec * 1000,
+      elapsedMs: Math.max(0, exactTimeSec - session.startOffsetSec) * 1000,
       activeMs: activeTimer.stop(),
       inputs: inputsRef.current,
-      prevBestSec: recordsRef.current?.[session.mode]?.best?.[session.count],
+      prevBestSec: recordsRef.current?.[session.mode]?.best?.[session.cells],
     });
   }, [activeTimer]);
 
@@ -507,7 +521,7 @@ export default function App() {
     // 学習ログ用のセッションを開始する
     sessionRef.current = createStudySession({
       mode,
-      count,
+      cells: count,
       rows: tableData.rows,
       cols: tableData.cols,
       autoScore: settings.autoScore,
@@ -602,6 +616,55 @@ export default function App() {
       if (awayTimer) clearTimeout(awayTimer);
     };
   }, [gameState, timer.peek]);
+
+  // Chromebook はメモリ不足やスリープでタブごと破棄されることがある。
+  // 5分タイマー方式だけでは、タブが消えた時点でタイマーも消え、
+  // 記録中のレコードが丸ごと失われる。pagehide で必ず確定させる（§5.4）。
+  // beforeunload はモバイルや bfcache 経路で発火しないことがあるため使わない。
+  const pendingResumeRef = useRef(false);
+  useEffect(() => {
+    const onPageHide = () => {
+      if (!runningRef.current || !sessionRef.current) return;
+      // 離脱時点で締める。1問も解答していなければ保存されない（§5.4）
+      saveSession('aborted', timer.peek());
+      // bfcache から戻って学習が続く場合に備えて、残り分での再開を控えておく
+      pendingResumeRef.current = true;
+    };
+    const onPageShow = (e) => {
+      const resume = pendingResumeRef.current;
+      pendingResumeRef.current = false;
+      // 中断済みレコードには追記しない。復帰後は残りのマスで新しいレコードを開始する
+      if (!e.persisted || !resume || !runningRef.current || sessionRef.current) return;
+
+      const { rows, cols } = tableDataRef.current;
+      const remaining = allCellKeys(rows, cols).filter((key) => {
+        const [r, c] = key.split('_').map(Number);
+        const val = inputsRef.current[key];
+        return !(val !== undefined && val !== '' && parseInt(val, 10) === answerOf(modeRef.current, rows[r], cols[c]));
+      });
+      if (remaining.length === 0) return;
+
+      sessionRef.current = createStudySession({
+        mode: modeRef.current,
+        cells: countRef.current,
+        rows,
+        cols,
+        autoScore: settingsRef.current.autoScore,
+        input: inputMethodOf(settingsRef.current),
+        scope: remaining,
+        startOffsetSec: timer.peek(),
+      });
+      markCellTiming(sessionRef.current, activeCellRef.current
+        ? `${activeCellRef.current.r}_${activeCellRef.current.c}` : remaining[0]);
+      activeTimer.start();
+    };
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+    };
+  }, [saveSession, timer.peek, activeTimer]);
 
   const getCorrectAnswer = useCallback((r, c) => {
     const rowVal = tableData.rows[r];
