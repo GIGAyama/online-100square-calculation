@@ -1,9 +1,11 @@
 /* study.v1 共通学習ログ — 保存のみ。外部送信は行わない。 */
 /*
  * 仕様: 学習ログ共通スキーマ仕様書 `study.v1`（GIGA山 学習アプリ群）
+ * 配布形態: ESM / ロジック版 1.1（仕様書 §5.1.2 の参照実装に対応）
  *
- * このファイルは全アプリで同一内容とすること。
- * 変更する場合は仕様書 §5.1 を更新し、5アプリすべてに同じ内容を配布する。
+ * このファイルは全アプリで同一の動作とすること。
+ * コメントや形式（ESM / グローバル）の差異は許容するが、ロジック本体の版ずれは
+ * 許容しない。改訂したら §5.1.3 の配布状況追跡表を更新し、全アプリへ配り直す。
  *
  * 保存先キー `study.records.v1` は複数アプリ共通の学習ログです。
  * このアプリ専用のキーではないため、リセット処理やクリーンアップの対象に
@@ -54,8 +56,18 @@ export function saveStudyRecord(rec) {
       elapsedMs: Math.round(rec.elapsedMs),
     };
 
+    // 保存済みログの読み出し。
+    // 中身が壊れている（JSON として読めない／配列でない）場合は空からやり直す。
+    // ここで外側の catch に流すと、一度壊れた端末は以降ずっと1件も保存できなくなる。
     const raw = localStorage.getItem(STUDY_LOG_KEY);
-    const log = raw ? JSON.parse(raw) : [];
+    let log = [];
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) log = parsed;
+      } catch (e) { /* 壊れていた → 空からやり直す */ }
+    }
+
     log.push(entry);
     if (log.length > STUDY_LOG_MAX) log.splice(0, log.length - STUDY_LOG_MAX);
     localStorage.setItem(STUDY_LOG_KEY, JSON.stringify(log));
