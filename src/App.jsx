@@ -1,20 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame } from 'lucide-react';
-import { saveStudyRecord } from './studyLog';
+import {
+  APP_ID, MODE_ID, answerOf, inputMethodOf,
+  createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
+} from './studySession';
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
-
-// ==========================================
-// 📚 学習ログ (study.v1) 用の定数
-// ==========================================
-// アプリのバージョンは package.json と揃えて、この1箇所だけで管理する
-export const APP_VERSION = '1.1.0';
-const APP_ID = 'square100';
-
-// 内部で使っている日本語のモード名を、集計用の英数小文字へ正規化する
-const MODE_ID = { 'たし算': 'add', '引き算': 'sub', 'かけ算': 'mul' };
-// 設問ID（items.q）に使う演算子。表示用の「×」ではなく安定した ASCII を使う
-const MODE_OP = { 'たし算': '+', '引き算': '-', 'かけ算': '*' };
-const MODE_LABEL = { add: 'たし算', sub: '引き算', mul: 'かけ算' };
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
@@ -69,23 +59,6 @@ const playSound = (type) => {
   }
 };
 
-const answerOf = (mode, rowVal, colVal) => {
-  if (mode === 'たし算') return rowVal + colVal;
-  if (mode === '引き算') return rowVal - colVal;
-  if (mode === 'かけ算') return rowVal * colVal;
-  return 0;
-};
-
-// 学習ログ用に、マスごとの解答状況（回数・初回正答・所要時間・誤答）を貯める入れ物
-const getCellStat = (session, key) => {
-  let stat = session.stats[key];
-  if (!stat) {
-    stat = { tries: 0, firstTry: false, ms: 0, wrong: [], lastVal: null };
-    session.stats[key] = stat;
-  }
-  return stat;
-};
-
 // 偏りのないシャッフル (Fisher–Yates)
 const shuffle = (array) => {
   const arr = [...array];
@@ -118,9 +91,16 @@ const useHighResTimer = () => {
     reqRef.current = requestAnimationFrame(update);
   }, []);
 
-  const stop = useCallback(() => {
+  // 経過時間を止めずに読む（中断時に「タブを離れた時刻」を控えるのに使う）
+  const peek = useCallback(() => (performance.now() - startTimeRef.current) / 1000, []);
+
+  // atSeconds を渡すと、その時点で止めたものとして締める。
+  // タブを離れたまま戻らなかった中断で、待っていた時間を含めないために使う
+  const stop = useCallback((atSeconds) => {
     if (reqRef.current) cancelAnimationFrame(reqRef.current);
-    const final = (performance.now() - startTimeRef.current) / 1000;
+    const final = atSeconds !== undefined
+      ? atSeconds
+      : (performance.now() - startTimeRef.current) / 1000;
     setFinalTime(final);
     if (displayRef.current) {
       displayRef.current.textContent = final.toFixed(1);
@@ -143,8 +123,8 @@ const useHighResTimer = () => {
   }, []);
 
   return useMemo(
-    () => ({ displayRef, start, stop, reset, finalTime }),
-    [start, stop, reset, finalTime]
+    () => ({ displayRef, start, stop, peek, reset, finalTime }),
+    [start, stop, peek, reset, finalTime]
   );
 };
 
@@ -462,125 +442,19 @@ export default function App() {
   // ------------------------------------------
   // 📚 学習ログ (study.v1) の記録
   // ------------------------------------------
-  // 解答が確定した（答えの桁数まで入力された）ときに1回だけ呼ぶ
-  const recordAttempt = useCallback((r, c, val, isCorrect) => {
-    const session = sessionRef.current;
-    if (!session) return;
-    const stat = getCellStat(session, `${r}_${c}`);
-    // 同じ値での重複カウントを防ぐ（手書き認識のリトライなど）
-    if (stat.lastVal === val) return;
-    stat.lastVal = val;
-    stat.tries++;
-    if (stat.tries === 1 && isCorrect) stat.firstTry = true;
-    if (!isCorrect) {
-      // 誤答した「問題のID」を Set で持つ（study.v1 §5.3）
-      session.wrongOnce.add(`${r}_${c}`);
-      if (stat.wrong.length < 5) stat.wrong.push(val.slice(0, 12));
-    }
-  }, []);
-
-  // 設問ごとの所要時間。フォーカスの移動を区切りとして加算する
-  const markCellTiming = useCallback((key) => {
-    const session = sessionRef.current;
-    if (!session) return;
-    const now = performance.now();
-    if (session.timedKey !== null) {
-      getCellStat(session, session.timedKey).ms += now - session.timedSince;
-    }
-    session.timedKey = key;
-    session.timedSince = now;
-  }, []);
-
+  // 組み立てとスキーマの詳細は studySession.js を参照。
+  // ここではセッションの開始・終了と、アプリ側の値の受け渡しだけを行う。
   // status: 'completed' | 'aborted'
   const saveSession = useCallback((status, exactTimeSec) => {
     const session = sessionRef.current;
     if (!session) return;
     sessionRef.current = null;
-
-    // 最後に触っていたマスの時間を締める
-    if (session.timedKey !== null) {
-      getCellStat(session, session.timedKey).ms += performance.now() - session.timedSince;
-      session.timedKey = null;
-    }
-    // Date.now() と performance.now() の誤差で activeMs > elapsedMs にならないよう丸める
-    const elapsedMs = Math.round(exactTimeSec * 1000);
-    const activeMs = Math.min(activeTimer.stop(), elapsedMs);
-
-    const op = MODE_OP[session.mode];
-    const items = [];
-    let attempted = 0;
-    let correct = 0;
-    let firstTryCorrect = 0;
-
-    for (let r = 0; r < session.rows.length; r++) {
-      for (let c = 0; c < session.cols.length; c++) {
-        const key = `${r}_${c}`;
-        const ans = answerOf(session.mode, session.rows[r], session.cols[c]);
-        const finalVal = inputsRef.current[key];
-        const ok = finalVal !== undefined && finalVal !== '' && parseInt(finalVal, 10) === ans;
-        if (ok) correct++;
-
-        const stat = session.stats[key];
-        if (!stat || stat.tries === 0) continue;   // 中断時：手をつけていないマス
-        attempted++;
-        if (stat.firstTry) firstTryCorrect++;
-        items.push({
-          q: `${session.rows[r]}${op}${session.cols[c]}`,
-          ok,
-          firstTry: stat.firstTry,
-          tries: stat.tries,
-          ms: Math.round(stat.ms),
-          wrong: stat.wrong.length ? stat.wrong : undefined,
-        });
-      }
-    }
-
-    // ext.bestMs は今回の記録も含めた現時点のベストタイム
-    const prevBestSec = recordsRef.current?.[session.mode]?.best?.[session.count];
-    const isNewBest = status === 'completed' && correct === session.count
-      && (prevBestSec === undefined || exactTimeSec < prevBestSec);
-    const bestSec = isNewBest ? exactTimeSec : prevBestSec;
-
-    const modeId = MODE_ID[session.mode];
-    saveStudyRecord({
-      appId: APP_ID,
-      appVersion: APP_VERSION,
-      kind: 'session',
-      mode: modeId,
-      unit: {
-        id: `${modeId}-${session.count}`,
-        title: `${session.mode} ${session.count}マス`,
-        preset: true,
-      },
-      source: 'course',
-      multiplayer: false,
-      grading: 'objective',
-      startedAt: session.startedAt,
-      endedAt: new Date().toISOString(),
-      elapsedMs,
-      activeMs,
-      timeBasis: 'app',
+    finalizeStudySession(session, {
       status,
-      summary: {
-        count: session.count,
-        attempted,
-        firstTryCorrect,
-        correct,
-      },
-      items,
-      ext: {
-        autoScore: session.autoScore,
-        input: session.input,
-        cells: session.count,
-        bestMs: bestSec !== undefined ? Math.round(bestSec * 1000) : undefined,
-        // items を持たない集計でも「どの式でつまずいたか」を辿れるようにする
-        wrongItems: [...session.wrongOnce]
-          .map((key) => {
-            const [r, c] = key.split('_').map(Number);
-            return `${session.rows[r]}${op}${session.cols[c]}`;
-          })
-          .slice(0, 100),
-      },
+      elapsedMs: exactTimeSec * 1000,
+      activeMs: activeTimer.stop(),
+      inputs: inputsRef.current,
+      prevBestSec: recordsRef.current?.[session.mode]?.best?.[session.count],
     });
   }, [activeTimer]);
 
@@ -630,25 +504,16 @@ export default function App() {
     runningRef.current = true;
     clearAllCanvas();
 
-    // 学習ログ用のセッションを開始する。
-    // performance.now() は経過時間の計測にしか使えないため、
-    // startedAt は Date から ISO 8601（タイムゾーン付き）で別途生成する
-    sessionRef.current = {
-      startedAt: new Date().toISOString(),
+    // 学習ログ用のセッションを開始する
+    sessionRef.current = createStudySession({
       mode,
       count,
       rows: tableData.rows,
       cols: tableData.cols,
       autoScore: settings.autoScore,
-      input: settings.handwriting && settings.numpad ? 'mixed'
-        : settings.handwriting ? 'handwriting'
-          : settings.numpad ? 'numpad' : 'keyboard',
-      stats: {},
-      wrongOnce: new Set(),
-      timedKey: null,
-      timedSince: 0,
-    };
-    markCellTiming('0_0');
+      input: inputMethodOf(settings),
+    });
+    markCellTiming(sessionRef.current, '0_0');
     activeTimer.start();
 
     setTimeout(() => {
@@ -688,12 +553,13 @@ export default function App() {
   }, [count, mode, settings.sound, timer.stop, saveSession]);
 
   // 途中でやめた記録も残す（study.v1 §5.4）。
-  // 「難しすぎる」「量が多すぎる」という重要なサインなので、捨ててはならない
-  const abortGame = useCallback(() => {
+  // 「難しすぎる」「量が多すぎる」という重要なサインなので、捨ててはならない。
+  // atSeconds を渡すと、その時点で締める（タブ離脱による中断で使う）
+  const abortGame = useCallback((atSeconds) => {
     setShowQuitConfirm(false);
     if (!runningRef.current) return;
     runningRef.current = false;
-    const exactTime = timer.stop();
+    const exactTime = timer.stop(atSeconds);
 
     let correctCount = 0;
     for (let r = 0; r < tableData.rows.length; r++) {
@@ -709,8 +575,11 @@ export default function App() {
     saveSession('aborted', exactTime);
   }, [mode, tableData, timer.stop, saveSession]);
 
-  // タブを離れたまま戻ってこない場合も「中断」として記録する。
-  // 数分の離席で終了させないよう、十分に長い猶予をとる
+  // タブを離れたまま5分戻ってこない場合も「中断」として記録する（§5.4）。
+  // 猶予を短くすると、教師の説明を聞くための数分の離席まで中断になってしまうため、
+  // 5分より短くしないこと。
+  // 記録は「タブを離れた時刻」で締める。待っていた5分を学習時間に含めると、
+  // 全児童の学習時間が水増しされる。
   const abortRef = useRef(abortGame);
   useEffect(() => { abortRef.current = abortGame; }, [abortGame]);
   useEffect(() => {
@@ -718,8 +587,9 @@ export default function App() {
     let awayTimer = null;
     const onVisibility = () => {
       if (document.hidden) {
+        const leftAtSec = timer.peek();
         awayTimer = setTimeout(() => {
-          if (document.hidden && runningRef.current) abortRef.current();
+          if (document.hidden && runningRef.current) abortRef.current(leftAtSec);
         }, 5 * 60 * 1000);
       } else if (awayTimer) {
         clearTimeout(awayTimer);
@@ -731,7 +601,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisibility);
       if (awayTimer) clearTimeout(awayTimer);
     };
-  }, [gameState]);
+  }, [gameState, timer.peek]);
 
   const getCorrectAnswer = useCallback((r, c) => {
     const rowVal = tableData.rows[r];
@@ -806,7 +676,7 @@ export default function App() {
     // 答えの桁数まで入力されたら「1回の解答」として学習ログに記録する。
     // 採点で終了する可能性があるため、必ず終了処理より先に記録する
     if (val.length > 0 && val.length >= ansStr.length) {
-      recordAttempt(r, c, val, parseInt(val, 10) === ans);
+      recordAttempt(sessionRef.current, r, c, val, parseInt(val, 10) === ans);
     }
 
     if (settings.autoScore && val.length > 0) {
@@ -826,15 +696,15 @@ export default function App() {
     setInputs(newInputs);
     // 答えの桁数まで入力し終えたマスだけ「回答済み」として採点判定する
     checkCompletion(newInputs, val.length >= ansStr.length);
-  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas, recordAttempt]);
+  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas]);
 
   const handleCellFocus = useCallback((r, c) => {
     const cell = { r, c };
     setActiveCell(cell);
     activeCellRef.current = cell;
-    markCellTiming(`${r}_${c}`);
+    markCellTiming(sessionRef.current, `${r}_${c}`);
     clearAllCanvas();
-  }, [clearAllCanvas, markCellTiming]);
+  }, [clearAllCanvas]);
 
   const handleCellKeyDown = useCallback((e, r, c) => {
     if (e.key === 'Enter') {
@@ -1353,7 +1223,7 @@ export default function App() {
             </div>
             <div className="p-4 pt-0 flex gap-2">
               <button onClick={() => setShowQuitConfirm(false)} className="flex-1 btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span>つづける</span></button>
-              <button onClick={abortGame} className="flex-1 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-50"><span>やめる</span></button>
+              <button onClick={() => abortGame()} className="flex-1 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-50"><span>やめる</span></button>
             </div>
           </div>
         </div>
@@ -1492,7 +1362,7 @@ export default function App() {
                       </div>
                       <div className="flex items-end gap-2">
                         <span className="text-3xl font-bold text-blue-700 tabular-nums">{Math.round(study.firstTryRate * 100)}%</span>
-                        <span className="text-xs text-slate-500 mb-1 tabular-nums">{study.recentFirstTryCorrect} / {study.recentCount}<ruby>問<rt>もん</rt></ruby></span>
+                        <span className="text-xs text-slate-500 mb-1 tabular-nums">{study.recentFirstTryCorrect} / {study.recentAttempted}<ruby>問<rt>もん</rt></ruby></span>
                       </div>
                       <div className="h-2 bg-white rounded-full overflow-hidden mt-1.5 border border-blue-100">
                         <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.round(study.firstTryRate * 100)}%` }} />
