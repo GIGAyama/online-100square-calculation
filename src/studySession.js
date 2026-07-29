@@ -9,7 +9,7 @@
 import { saveStudyRecord } from './studyLog';
 
 // アプリのバージョンは package.json と揃えて、この1箇所だけで管理する
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.3.1';
 export const APP_ID = 'square100';
 
 // 内部で使っている日本語のモード名 → 集計用の英数小文字。

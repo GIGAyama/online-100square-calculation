@@ -215,11 +215,20 @@ const Cell = memo(({
         ref={el => { inputRefs.current[`${r}_${c}`] = el; }}
         type={suppressOsKeyboard ? 'text' : 'tel'}
         inputMode={suppressOsKeyboard ? 'none' : 'numeric'}
+        // 手書き・テンキーを使う間は端末のソフトウェアキーボード（Gboard など）を出さない。
+        // inputMode="none" は iPadOS が未対応で Android でも無視されることがあるため、
+        // どの端末でも確実に抑止できる readOnly を併用する。
+        // readOnly だと入力欄自身は文字を受け付けないが、値は手書き認識・テンキー・
+        // 物理キーボード（handleCellKeyDown）から JS で書き込むので入力は妨げられない
+        readOnly={suppressOsKeyboard}
         autoComplete="off"
         enterKeyHint="next"
         aria-label={ariaLabel}
         value={val}
         disabled={disabled || (autoScore && parseInt(val, 10) === ans)}
+        // readOnly なマスに focus が飛ばない端末でも「いま解いているマス」が
+        // 切り替わるように、タップ時点でも対象セルを確定させる
+        onPointerDown={() => { if (!isActive) onFocus(r, c); }}
         onFocus={() => onFocus(r, c)}
         onChange={(e) => onChange(r, c, e.target.value)}
         onKeyDown={(e) => onKeyDown(e, r, c)}
@@ -770,6 +779,22 @@ export default function App() {
   }, [clearAllCanvas]);
 
   const handleCellKeyDown = useCallback((e, r, c) => {
+    // ソフトウェアキーボード抑止のためマスを readOnly にしている間は、
+    // input の既定の文字入力が働かない。物理キーボードでも今までどおり
+    // 数字が打てるように、数字キーとバックスペースを自前で反映する
+    if (settings.numpad || settings.handwriting) {
+      if (/^[0-9]$/.test(e.key)) {
+        e.preventDefault();
+        handleInputChange(r, c, (inputsRef.current[`${r}_${c}`] || '') + e.key);
+        return;
+      }
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        handleInputChange(r, c, (inputsRef.current[`${r}_${c}`] || '').slice(0, -1));
+        return;
+      }
+    }
+
     if (e.key === 'Enter') {
       moveToNextCell(r, c);
     } else if (e.key === 'ArrowRight') {
@@ -801,7 +826,7 @@ export default function App() {
         inputRefs.current[`${r - 1}_${c}`]?.focus();
       }
     }
-  }, [moveToNextCell, tableData]);
+  }, [moveToNextCell, tableData, settings.numpad, settings.handwriting, handleInputChange]);
 
   const handleNumpadInput = useCallback((num) => {
     if (gameState !== 'playing' || !activeCellRef.current) return;
@@ -1060,6 +1085,13 @@ export default function App() {
         .sq-table td input {
           /* 16px 未満だと iOS Safari がフォーカス時に画面を自動ズームしてしまうため下限 16px */
           font-size: max(16px, calc(var(--cell, 48px) * 0.42));
+        }
+        /* ソフトウェアキーボード抑止中（readOnly）のマス。長押しで文字選択ハンドルや
+           コピー用メニューが出ると誤操作のもとなので、選択そのものを無効にする */
+        .sq-table td input[readonly] {
+          user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
         }
         .cell-correct { background-color: #dcfce7 !important; color: #166534; font-weight: bold; }
         .cell-wrong { background-color: #fee2e2 !important; color: #991b1b; }
