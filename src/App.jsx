@@ -1,15 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame } from 'lucide-react';
+import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles } from 'lucide-react';
 import {
   APP_ID, MODE_ID, answerOf, inputMethodOf, allCellKeys,
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
 } from './studySession';
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
+import { isStandalone } from './pwa';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
 // ==========================================
 let audioCtx = null;
+
+// TensorFlow.js 本体。手書き入力を使うときだけ import() で読み込むため、
+// 読み込みが済むまでは null。CDN ではなく自分側に置いている（§6）
+let tfjs = null;
 
 const initAudioContext = () => {
   if (!audioCtx) {
@@ -183,6 +188,50 @@ const useActiveTimeTracker = () => {
 };
 
 // ==========================================
+// 🪟 カスタムフック: モーダルのフォーカス閉じ込め
+// ==========================================
+// 開いている間、Tab がモーダルの外へ出ないようにし、閉じたら元の場所へ返す。
+// キーボードだけで操作している児童・先生が、見えていない背景のボタンに
+// フォーカスを落として迷子になるのを防ぐ（Part I §4）。
+// Esc で閉じる処理は、既にある一括のハンドラに任せてある。
+const useModalFocus = (ref, isOpen) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    const box = ref.current;
+    if (!box) return;
+    const prevFocused = document.activeElement;
+
+    const focusables = () => Array.from(box.querySelectorAll(
+      'a[href],button:not([disabled]),select:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])'
+    )).filter((el) => el.offsetParent !== null);
+
+    const first = focusables()[0];
+    if (first) first.focus();
+    else box.focus();
+
+    const onKeyDown = (e) => {
+      if (e.key !== 'Tab') return;
+      const list = focusables();
+      if (list.length === 0) return;
+      const head = list[0];
+      const tail = list[list.length - 1];
+      if (e.shiftKey && document.activeElement === head) {
+        e.preventDefault();
+        tail.focus();
+      } else if (!e.shiftKey && document.activeElement === tail) {
+        e.preventDefault();
+        head.focus();
+      }
+    };
+    box.addEventListener('keydown', onKeyDown);
+    return () => {
+      box.removeEventListener('keydown', onKeyDown);
+      if (prevFocused && typeof prevFocused.focus === 'function') prevFocused.focus();
+    };
+  }, [ref, isOpen]);
+};
+
+// ==========================================
 // 🧩 コンポーネント: 最適化された個別のセル
 // ==========================================
 const Cell = memo(({
@@ -277,8 +326,54 @@ export default function App() {
   const [showStats, setShowStats] = useState(false);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
 
+  const settingsBoxRef = useRef(null);
+  const statsBoxRef = useRef(null);
+  const quitBoxRef = useRef(null);
+  useModalFocus(settingsBoxRef, showSettings);
+  useModalFocus(statsBoxRef, showStats);
+  useModalFocus(quitBoxRef, showQuitConfirm);
+
+  // ホーム画面・デスクトップへの追加を案内できるか。
+  // ⚠️ 案内できるときだけボタンを出す。出せないボタンを置いておくと
+  //    「押しても何も起きない」と言われる（§3-2）。
+  //    合図（beforeinstallprompt）は install-hook.js が <head> の先頭で
+  //    受け取り済み。React の読み込みを待つと取りこぼす。
+  const [canInstall, setCanInstall] = useState(
+    () => !!window.__pwaInstallPrompt && !isStandalone()
+  );
+  useEffect(() => {
+    const onAvailable = () => setCanInstall(!isStandalone());
+    const onInstalled = () => setCanInstall(false);
+    window.addEventListener('pwa-install-available', onAvailable);
+    window.addEventListener('pwa-installed', onInstalled);
+    return () => {
+      window.removeEventListener('pwa-install-available', onAvailable);
+      window.removeEventListener('pwa-installed', onInstalled);
+    };
+  }, []);
+
+  const handleInstall = useCallback(async () => {
+    const prompt = window.__pwaInstallPrompt;
+    if (!prompt) return;
+    // 合図は一度しか使えない。押した時点で消しておかないと二度目で例外になる
+    window.__pwaInstallPrompt = null;
+    setCanInstall(false);
+    prompt.prompt();
+    await prompt.userChoice;
+  }, []);
+
+  // 新しい版が待機していることの案内。
+  // ⚠️ 押されるまで切り替えない。計算の途中で入れ替わると、
+  //    打ちかけの答えも計測中のタイムも消える（§3-3）。
+  const [updateReady, setUpdateReady] = useState(false);
+  useEffect(() => {
+    const onReady = () => setUpdateReady(true);
+    window.addEventListener('pwa-update-ready', onReady);
+    return () => window.removeEventListener('pwa-update-ready', onReady);
+  }, []);
+
   const [tfModel, setTfModel] = useState(null);
-  const [aiStatus, setAiStatus] = useState(<span>AI<ruby>準備中<rt>じゅんびちゅう</rt></ruby>...</span>);
+  const [aiStatus, setAiStatus] = useState(<span>AI<ruby>準備中<rp>(</rp><rt>じゅんびちゅう</rt><rp>)</rp></ruby>...</span>);
   const canvasRefs = [useRef(null), useRef(null)];
   const isDrawingRef = useRef([false, false]);
   const isDirtyRef = useRef([false, false]);
@@ -419,31 +514,44 @@ export default function App() {
     // gameState も依存に含める: 結果バナーの表示で表の上端位置が変わるため
   }, [tableData, gameState]);
 
-  const initTensorFlow = () => {
-    if (!window.tf) {
-      const script = document.createElement('script');
-      script.src = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0";
-      script.async = true;
-      script.onload = loadModel;
-      script.onerror = () => {
-        setAiStatus(<span>AIの<ruby>準備<rt>じゅんび</rt></ruby>に<ruby>失敗<rt>しっぱい</rt></ruby>しました</span>);
-      };
-      document.body.appendChild(script);
-    } else {
-      loadModel();
-    }
-  };
-
-  const loadModel = async () => {
-    setAiStatus(<span>AIモデルを<ruby>読<rt>よ</rt></ruby>み<ruby>込<rt>こ</rt></ruby>み<ruby>中<rt>ちゅう</rt></ruby>...</span>);
+  // TensorFlow.js 本体と、それを使う推論モデルを読み込む。
+  //
+  // ⚠️ 以前はここで cdn.jsdelivr.net から <script> を差し込んでいた。
+  //    学校のネットワークは jsDelivr を塞いでいることがあり、実測すると
+  //    ERR_TUNNEL_CONNECTION_FAILED で window.tf が未定義のまま、
+  //    「AIの準備に失敗しました」と出て手書き入力が丸ごと使えなくなっていた。
+  //    手書きは既定でオンなので、多くの児童が影響を受ける。
+  //    しかも原因がアプリの外（学校の設定）にあるため、先生が調べても分からない。
+  //    → 自分側に置き、通信の可否に関係なく動くようにした（Part I §1・§6）。
+  //
+  //    import() にしてあるのは、手書きをオフにしている端末に約1MBを
+  //    ダウンロードさせないため。Vite が別チャンクに切り出す。
+  const initTensorFlow = async () => {
+    setAiStatus(<span>AIモデルを<ruby>読<rp>(</rp><rt>よ</rt><rp>)</rp></ruby>み<ruby>込<rp>(</rp><rt>こ</rt><rp>)</rp></ruby>み<ruby>中<rp>(</rp><rt>ちゅう</rt><rp>)</rp></ruby>...</span>);
     try {
-      const modelUrl = './model.json';
-      const model = await window.tf.loadGraphModel(modelUrl);
+      if (!tfjs) {
+        // 手書き認識モデルは GraphModel なので、必要なのは core と converter、
+        // それに実行する土台（WebGL・使えない端末向けの CPU）だけ。
+        // `@tensorflow/tfjs` を丸ごと読むと tfjs-layers / tfjs-data まで付いてきて
+        // 転送量が倍近くなる。校内 Wi-Fi で40人が同時に開く前提では効く（§8）
+        const [core] = await Promise.all([
+          import('@tensorflow/tfjs-core'),
+          import('@tensorflow/tfjs-converter'),
+          import('@tensorflow/tfjs-backend-webgl'),
+          import('@tensorflow/tfjs-backend-cpu'),
+        ]);
+        const converter = await import('@tensorflow/tfjs-converter');
+        tfjs = { ...core, loadGraphModel: converter.loadGraphModel };
+        await core.ready();
+      }
+      const model = await tfjs.loadGraphModel(`${import.meta.env.BASE_URL}model.json`);
       setTfModel(model);
-      setAiStatus(<span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>が<ruby>使<rt>つか</rt></ruby>えます</span>);
+      setAiStatus(<span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>き<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>が<ruby>使<rp>(</rp><rt>つか</rt><rp>)</rp></ruby>えます</span>);
     } catch (e) {
       console.error("TF初期化エラー:", e);
-      setAiStatus(<span>AIの<ruby>準備<rt>じゅんび</rt></ruby>に<ruby>失敗<rt>しっぱい</rt></ruby>しました</span>);
+      // 再試行できるように、失敗したら次回の設定オンでもう一度読みにいけるようにする
+      tfLoadStartedRef.current = false;
+      setAiStatus(<span>AIの<ruby>準備<rp>(</rp><rt>じゅんび</rt><rp>)</rp></ruby>に<ruby>失敗<rp>(</rp><rt>しっぱい</rt><rp>)</rp></ruby>しました</span>);
     }
   };
 
@@ -459,6 +567,44 @@ export default function App() {
     }
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
   }, []);
+
+  // 手書き欄の解像度を、実際に表示されている大きさに合わせる（§2-5）。
+  //
+  // 以前は width/height を 320 固定にしていたため、CSS 側の枠が横長になる
+  // 端末（Chromebook の分割画面・横向きの iPad）では正方形の絵が引き伸ばされ、
+  // 縦横比の違う数字を 28×28 に縮めて推論することになっていた。
+  // 線もぼやける。
+  //
+  // dpr を 2 で頭打ちにするのは、3倍端末で 9倍の面積を描くとメモリ4GBの
+  // Chromebook がタブごと落ちるため。2 あれば肉眼では十分きれい。
+  const fitCanvases = useCallback(() => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    for (let i = 0; i < 2; i++) {
+      const canvas = canvasRefs[i].current;
+      if (!canvas) continue;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+      const w = Math.round(rect.width * dpr);
+      const h = Math.round(rect.height * dpr);
+      if (canvas.width === w && canvas.height === h) continue;
+      // 大きさを変えると中身は消えるので、書きかけを消したことを状態にも反映する
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      isDirtyRef.current[i] = false;
+    }
+  }, []);
+
+  // 画面回転・分割画面・電子黒板への出力切替に追従させる
+  useEffect(() => {
+    if (!settings.handwriting) return;
+    fitCanvases();
+    const ro = new ResizeObserver(fitCanvases);
+    canvasRefs.forEach((ref) => { if (ref.current) ro.observe(ref.current); });
+    return () => ro.disconnect();
+  }, [settings.handwriting, fitCanvases]);
 
   // ------------------------------------------
   // 📚 学習ログ (study.v1) の記録
@@ -874,7 +1020,10 @@ export default function App() {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const pos = getCanvasPos(e, i);
 
-    ctx.lineWidth = 36;
+    // 線の太さは canvas の実解像度に対する割合で決める。
+    // 固定値にすると、DPR 補正で解像度が変わった端末だけ線が細くなり、
+    // 28×28 に縮めたときの字の濃さが変わって認識率が落ちる
+    ctx.lineWidth = Math.max(8, canvas.width * 0.1125);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = '#334155';
@@ -897,7 +1046,7 @@ export default function App() {
   };
 
   const preprocessCanvas = (sourceCanvas) => {
-    if (!window.tf) return null;
+    if (!tfjs) return null;
     const sCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
     const imgData = sCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
     const data = imgData.data;
@@ -947,12 +1096,12 @@ export default function App() {
       const r = resizedData[i * 4];
       input[i] = (255 - r) / 255.0;
     }
-    return window.tf.tensor4d(input, [1, 28, 28, 1]);
+    return tfjs.tensor4d(input, [1, 28, 28, 1]);
   };
 
   const recognizeHandwriting = async () => {
     const cell = activeCellRef.current;
-    if (!settings.handwriting || !tfModel || !window.tf || !cell) return;
+    if (!settings.handwriting || !tfModel || !tfjs || !cell) return;
 
     let finalNumberStr = "";
 
@@ -989,10 +1138,10 @@ export default function App() {
     }
 
     if (finalNumberStr.length > 0) {
-      setAiStatus(<span>「{finalNumberStr}」を<ruby>入力<rt>にゅうりょく</rt></ruby>しました</span>);
+      setAiStatus(<span>「{finalNumberStr}」を<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>しました</span>);
       handleInputChange(cell.r, cell.c, finalNumberStr);
     } else {
-      setAiStatus(<span><ruby>数字<rt>すうじ</rt></ruby>がわかりませんでした</span>);
+      setAiStatus(<span><ruby>数字<rp>(</rp><rt>すうじ</rt><rp>)</rp></ruby>がわかりませんでした</span>);
       clearAllCanvas();
     }
   };
@@ -1067,12 +1216,13 @@ export default function App() {
     return n;
   }, [inputs, tableData, getCorrectAnswer]);
 
+  // app-shell = 100dvh。100vh はモバイルのアドレスバー分だけはみ出す（§2-2）
   return (
-    <div className="min-h-screen bg-slate-100/50 text-slate-800 flex flex-col items-center">
+    <div className="app-shell bg-slate-100/50 text-slate-800 flex flex-col items-center">
       <style>{`
-        /* ダブルタップズームを無効化してボタン連打の反応を良くする（パン・ピンチは可能なまま） */
-        body { touch-action: manipulation; }
-        * { -webkit-tap-highlight-color: transparent; }
+        /* touch-action / tap-highlight / ふりがなの色などの共通の土台は
+           index.css（GIGA Standard Part I §2）に集約してある。
+           ここには 100マス計算だけの見た目を置く。 */
         .btn-press { transition: all 0.1s; }
         .btn-press:active { transform: scale(0.95); }
         /* マスの大きさは画面幅から計算した --cell 変数で一括制御する */
@@ -1102,58 +1252,65 @@ export default function App() {
         .cell-error-flash {
           animation: errorFlash 0.4s ease-out;
         }
-        ruby { ruby-align: center; vertical-align: baseline; }
-        rt { font-size: 0.65em; color: #64748b; font-weight: 500; user-select: none; line-height: 0; }
+        /* いま解いている計算式は児童がいちばん見る「主役」。
+           320px のスマホから電子黒板まで clamp() 一本で通す（§2-4） */
+        .current-problem { font-size: var(--fs-hero); font-family: var(--font-textbook); }
       `}</style>
 
       {/* 🔴 ヘッダー（操作類をここに集約して、下の計算ボードの縦空間を最大化する） */}
       <nav className="w-full bg-white border-b-4 border-slate-600 px-2 sm:px-4 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 shadow-sm z-30 sticky top-0">
-        <div className="flex items-center gap-1.5 text-slate-700 font-bold text-lg mr-auto">
-          <Calculator className="w-5 h-5" />
-          <span className="whitespace-nowrap">100マス<ruby>計算<rt>けいさん</rt></ruby></span>
-        </div>
+        <h1 className="flex items-center gap-1.5 text-slate-700 font-bold text-lg mr-auto my-0">
+          <Calculator className="w-5 h-5" aria-hidden="true" />
+          <span className="whitespace-nowrap">100マス<ruby>計算<rp>(</rp><rt>けいさん</rt><rp>)</rp></ruby></span>
+        </h1>
 
         <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-          <select aria-label="計算の種類" value={mode} onChange={handleModeChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+          <select aria-label="計算の種類" value={mode} onChange={handleModeChange} disabled={gameState === 'playing'} className="tap-44 bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
             <option value="たし算">たし算</option>
             <option value="引き算">引き算</option>
             <option value="かけ算">かけ算</option>
           </select>
-          <select aria-label="問題数" value={count} onChange={handleCountChange} disabled={gameState === 'playing'} className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+          <select aria-label="問題数" value={count} onChange={handleCountChange} disabled={gameState === 'playing'} className="tap-44 bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
             {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(n => (
               <option key={n} value={n}>{n}問</option>
             ))}
           </select>
 
           <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end">
-            <Clock className="w-4 h-4 text-slate-400" />
+            <Clock className="w-4 h-4 text-slate-500" />
             <span ref={timer.displayRef} className={gameState === 'playing' ? 'text-blue-600 tabular-nums' : 'tabular-nums'}>
               {gameState === 'result' ? timer.finalTime.toFixed(1) : "0.0"}
             </span>
-            <span className="text-xs text-slate-500"><span><ruby>秒<rt>びょう</rt></ruby></span></span>
+            <span className="text-xs text-slate-500"><span><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
           </div>
 
           {gameState === 'idle' && (
-            <button onClick={startGame} className="btn-press bg-slate-700 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-800 text-sm whitespace-nowrap">
-              <Play className="w-4 h-4 fill-current" /> <span>スタート！</span>
+            <button onClick={startGame} className="tap-44 btn-press bg-slate-700 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-800 text-sm whitespace-nowrap">
+              <Play className="w-4 h-4 fill-current" aria-hidden="true" /> <span>スタート！</span>
             </button>
           )}
           {gameState === 'playing' && (
-            <button onClick={() => setShowQuitConfirm(true)} className="btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-1 px-3 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-50 text-sm whitespace-nowrap">
-              <LogOut className="w-4 h-4" /> <span>やめる</span>
+            <button onClick={() => setShowQuitConfirm(true)} className="tap-44 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-1 px-3 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-50 text-sm whitespace-nowrap">
+              <LogOut className="w-4 h-4" aria-hidden="true" /> <span>やめる</span>
             </button>
           )}
           {gameState === 'result' && (
-            <button onClick={() => generateTable(mode, count)} className="btn-press bg-blue-600 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-blue-700 text-sm whitespace-nowrap">
-              <RefreshCw className="w-4 h-4" /> <span>もう<ruby>一度<rt>いちど</rt></ruby></span>
+            <button onClick={() => generateTable(mode, count)} className="tap-44 btn-press bg-blue-600 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-blue-700 text-sm whitespace-nowrap">
+              <RefreshCw className="w-4 h-4" aria-hidden="true" /> <span>もう<ruby>一度<rp>(</rp><rt>いちど</rt><rp>)</rp></ruby></span>
             </button>
           )}
 
-          <button onClick={() => setShowStats(true)} className="p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="記録">
-            <BarChart2 className="w-5 h-5" />
+          {canInstall && (
+            <button onClick={handleInstall} className="tap-44 btn-press bg-white border-2 border-slate-300 text-slate-700 font-bold py-1 px-3 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-50 text-sm whitespace-nowrap">
+              <Download className="w-4 h-4" aria-hidden="true" /> <span>アプリに<ruby>追加<rp>(</rp><rt>ついか</rt><rp>)</rp></ruby></span>
+            </button>
+          )}
+
+          <button onClick={() => setShowStats(true)} className="tap-44 p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="記録" aria-label="これまでの記録をみる">
+            <BarChart2 className="w-5 h-5" aria-hidden="true" />
           </button>
-          <button onClick={() => setShowSettings(true)} className="p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="設定">
-            <Settings className="w-5 h-5" />
+          <button onClick={() => setShowSettings(true)} className="tap-44 p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="設定" aria-label="設定をひらく">
+            <Settings className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
       </nav>
@@ -1165,22 +1322,22 @@ export default function App() {
         <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-2 sm:p-3">
 
           {gameState === 'result' && (
-            <div className="mb-3 bg-slate-100 border-2 border-slate-300 rounded-xl p-3 text-center">
+            <div className="mb-3 bg-slate-100 border-2 border-slate-300 rounded-xl p-3 text-center" role="status" aria-live="polite">
               <h2 className="text-xl font-bold text-slate-700 flex justify-center items-center gap-2">
-                <Trophy className="w-6 h-6 text-slate-500" />
+                <Trophy className="w-6 h-6 text-slate-500" aria-hidden="true" />
                 {resultScore === count ? (
-                  <span>クリア！よく<ruby>頑張<rt>がんば</rt></ruby>ったね！</span>
+                  <span>クリア！よく<ruby>頑張<rp>(</rp><rt>がんば</rt><rp>)</rp></ruby>ったね！</span>
                 ) : (
-                  <span>おわり！<ruby>正解<rt>せいかい</rt></ruby> {resultScore} / {count}<ruby>問<rt>もん</rt></ruby></span>
+                  <span>おわり！<ruby>正解<rp>(</rp><rt>せいかい</rt><rp>)</rp></ruby> {resultScore} / {count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span>
                 )}
               </h2>
               <p className="text-2xl font-bold text-slate-800 mt-1">
-                タイム: <span className="text-blue-600 tabular-nums">{timer.finalTime.toFixed(1)}</span> <span><ruby>秒<rt>びょう</rt></ruby></span>
+                タイム: <span className="text-blue-600 tabular-nums">{timer.finalTime.toFixed(1)}</span> <span><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span>
               </p>
             </div>
           )}
 
-          <div ref={gridWrapRef} className="overflow-x-auto pb-1">
+          <div ref={gridWrapRef} className="scroll-area overflow-x-auto pb-1">
             <table className="sq-table w-full border-collapse mx-auto bg-white select-none" style={{ minWidth: 'max-content', '--cell': `${cellSize}px` }}>
               <thead>
                 <tr>
@@ -1228,17 +1385,17 @@ export default function App() {
               視線を動かさずに「何の計算をしているか」「あと何問か」がわかる */}
           {gameState === 'playing' && activeCell && (
             <div className="bg-blue-50 border-2 border-blue-200 rounded-xl px-3 sm:px-4 py-2 flex items-center justify-between gap-2 shadow-sm">
-              <div className="text-2xl sm:text-3xl font-bold text-slate-800 tabular-nums whitespace-nowrap">
+              <div className="current-problem font-bold text-slate-800 tabular-nums whitespace-nowrap leading-tight">
                 {tableData.rows[activeCell.r]}
                 <span className="text-blue-600 mx-1.5">{operatorSymbol}</span>
                 {tableData.cols[activeCell.c]}
                 <span className="mx-1.5">=</span>
                 <span className="inline-block min-w-[2ch] border-b-4 border-blue-400 text-blue-700 text-center">
-                  {inputs[`${activeCell.r}_${activeCell.c}`] || <span className="text-blue-300">?</span>}
+                  {inputs[`${activeCell.r}_${activeCell.c}`] || <span className="text-blue-500">?</span>}
                 </span>
               </div>
-              <div className="text-xs sm:text-sm font-bold text-slate-500 text-right whitespace-nowrap">
-                <span>のこり</span> <span className="text-lg sm:text-xl text-slate-700 tabular-nums">{count - solvedCount}</span> <span><ruby>問<rt>もん</rt></ruby></span>
+              <div className="text-xs sm:text-sm font-bold text-slate-600 text-right whitespace-nowrap">
+                <span>のこり</span> <span className="text-lg sm:text-xl text-slate-700 tabular-nums">{count - solvedCount}</span> <span><ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span>
               </div>
             </div>
           )}
@@ -1247,21 +1404,23 @@ export default function App() {
           {settings.handwriting && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
               <div className="flex justify-between items-center mb-3">
-                <h3 className="text-sm font-bold text-slate-500 flex items-center gap-1">
-                  <PenTool className="w-4 h-4" /> <span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby></span>
-                </h3>
-                <button onMouseDown={(e) => e.preventDefault()} onClick={clearAllCanvas} className="btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold">
-                  <Eraser className="w-4 h-4" /> <span><ruby>消<rt>け</rt></ruby>す</span>
+                <h2 className="text-sm font-bold text-slate-600 flex items-center gap-1">
+                  <PenTool className="w-4 h-4" aria-hidden="true" /> <span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>き<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby></span>
+                </h2>
+                <button onMouseDown={(e) => e.preventDefault()} onClick={clearAllCanvas} className="tap-44 btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="手書きした数字を消す">
+                  <Eraser className="w-4 h-4" aria-hidden="true" /> <span><ruby>消<rp>(</rp><rt>け</rt><rp>)</rp></ruby>す</span>
                 </button>
               </div>
 
               <div className="flex justify-center gap-3 mb-2">
                 {[0, 1].map(i => (
                   <div key={i} className="flex-1 border-4 border-slate-200 rounded-2xl overflow-hidden bg-slate-50 touch-none" style={{ height: '160px' }}>
+                    {/* width/height は fitCanvases が表示サイズ×dpr で設定する（§2-5）。
+                        ここで固定値を書くと、その値で1フレーム描かれてぼやける */}
                     <canvas
                       ref={canvasRefs[i]}
-                      width={320} height={320}
-                      className="w-full h-full block cursor-crosshair"
+                      aria-label="数字を手書きするところ"
+                      className="canvas-area w-full h-full block cursor-crosshair"
                       onMouseDown={(e) => startDrawing(e, i)}
                       onMouseMove={(e) => drawOnCanvas(e, i)}
                       onMouseUp={(e) => stopDrawing(e, i)}
@@ -1271,16 +1430,16 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <div className="text-center text-sm font-bold text-slate-500 mt-2 h-5">{aiStatus}</div>
+              <div className="text-center text-sm font-bold text-slate-600 mt-2 h-5" role="status" aria-live="polite">{aiStatus}</div>
             </div>
           )}
 
           {/* ⌨️ ソフトウェアテンキー */}
           {settings.numpad && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
-              <h3 className="text-sm font-bold text-slate-500 mb-4 flex items-center gap-1">
-                <Keyboard className="w-4 h-4" /> <span>ボタン<ruby>入力<rt>にゅうりょく</rt></ruby></span>
-              </h3>
+              <h2 className="text-sm font-bold text-slate-600 mb-4 flex items-center gap-1">
+                <Keyboard className="w-4 h-4" aria-hidden="true" /> <span>ボタン<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby></span>
+              </h2>
               <div className="grid grid-cols-3 gap-3">
                 {/* onMouseDown の preventDefault で、ボタンを押してもマスのフォーカスが外れないようにする */}
                 {[7, 8, 9, 4, 5, 6, 1, 2, 3].map(num => (
@@ -1288,14 +1447,14 @@ export default function App() {
                     {num}
                   </button>
                 ))}
-                <button onMouseDown={(e) => e.preventDefault()} onClick={() => handleNumpadInput('back')} className="btn-press h-16 bg-red-50 hover:bg-red-100 border-2 border-red-200 rounded-xl text-red-500 font-bold flex justify-center items-center shadow-sm text-lg">
-                  <span><ruby>消<rt>け</rt></ruby>す</span>
+                <button onMouseDown={(e) => e.preventDefault()} onClick={() => handleNumpadInput('back')} className="btn-press h-16 bg-red-50 hover:bg-red-100 border-2 border-red-200 rounded-xl text-red-700 font-bold flex justify-center items-center shadow-sm text-lg">
+                  <span><ruby>消<rp>(</rp><rt>け</rt><rp>)</rp></ruby>す</span>
                 </button>
                 <button onMouseDown={(e) => e.preventDefault()} onClick={() => handleNumpadInput('0')} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
                   0
                 </button>
                 <button onMouseDown={(e) => e.preventDefault()} onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c) }} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
-                  <span><ruby>次<rt>つぎ</rt></ruby>へ</span> <ArrowRight className="w-5 h-5 ml-1" />
+                  <span><ruby>次<rp>(</rp><rt>つぎ</rt><rp>)</rp></ruby>へ</span> <ArrowRight className="w-5 h-5 ml-1" />
                 </button>
               </div>
             </div>
@@ -1304,17 +1463,43 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="w-full bg-white border-t border-slate-200 pt-3 pb-2 text-center text-sm text-slate-500 font-bold shadow-sm mt-auto">
-        © 2026 100マス計算 <a href="https://note.com/cute_borage86" target="_blank" rel="noopener noreferrer" className="text-slate-600 hover:underline">GIGA山</a>
+      <footer className="no-print safe-bottom w-full bg-white border-t border-slate-200 pt-3 pb-2 text-center text-sm text-slate-500 font-bold shadow-sm mt-auto">
+        © 2026 100マス計算 <a href="https://note.com/cute_borage86" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline">GIGA山</a>
       </footer>
+
+      {/* 🔄 あたらしい版のおしらせ（§3-3）
+          押されるまで切り替えない。計算の途中で入れ替わると、
+          打ちかけの答えも計測中のタイムも消える。
+          あとから足した固定要素なので .no-print を必ず付ける（§2-12） */}
+      {updateReady && (
+        <div className="no-print safe-bottom fixed inset-x-0 bottom-0 z-40 flex justify-center px-3 pt-3 pointer-events-none">
+          <div role="status" aria-live="polite" className="pointer-events-auto bg-slate-800 text-white rounded-2xl shadow-xl px-4 py-3 flex items-center gap-3 max-w-md w-full">
+            <Sparkles className="w-5 h-5 shrink-0" aria-hidden="true" />
+            <span className="text-sm font-bold flex-1">あたらしい ばんが あります</span>
+            <button
+              onClick={() => { setUpdateReady(false); window.__pwaAcceptUpdate?.(); }}
+              className="tap-44 btn-press bg-white text-slate-800 font-bold text-sm px-3 py-1.5 rounded-xl whitespace-nowrap"
+            >
+              さいしんに する
+            </button>
+            <button
+              onClick={() => setUpdateReady(false)}
+              className="tap-44 text-slate-300 hover:text-white"
+              aria-label="おしらせをとじる"
+            >
+              <X className="w-5 h-5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 🚪 中断かくにんモーダル */}
       {showQuitConfirm && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-xs overflow-hidden animate-[fadeIn_0.2s_ease-out]">
+          <div ref={quitBoxRef} role="dialog" aria-modal="true" aria-labelledby="quit-title" tabIndex={-1} className="bg-white rounded-2xl shadow-xl w-full max-w-xs overflow-hidden animate-[fadeIn_0.2s_ease-out]">
             <div className="p-5 text-center">
-              <div className="font-bold text-lg text-slate-700 mb-1"><span>とちゅうで やめますか？</span></div>
-              <div className="text-xs text-slate-500"><span>ここまでの<ruby>記録<rt>きろく</rt></ruby>は<ruby>残<rt>のこ</rt></ruby>ります</span></div>
+              <div id="quit-title" className="font-bold text-lg text-slate-700 mb-1"><span>とちゅうで やめますか？</span></div>
+              <div className="text-xs text-slate-600"><span>ここまでの<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby>は<ruby>残<rp>(</rp><rt>のこ</rt><rp>)</rp></ruby>ります</span></div>
             </div>
             <div className="p-4 pt-0 flex gap-2">
               <button onClick={() => setShowQuitConfirm(false)} className="flex-1 btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span>つづける</span></button>
@@ -1327,18 +1512,18 @@ export default function App() {
       {/* ⚙️ 設定モーダル */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out]">
+          <div ref={settingsBoxRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out]">
             <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-              <h3 className="font-bold text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-600" /> <span><ruby>設定<rt>せってい</rt></ruby></span></h3>
-              <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
+              <h2 id="settings-title" className="font-bold text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-600" aria-hidden="true" /> <span><ruby>設定<rp>(</rp><rt>せってい</rt><rp>)</rp></ruby></span></h2>
+              <button onClick={() => setShowSettings(false)} className="tap-44 text-slate-500 hover:text-slate-700" aria-label="設定をとじる"><X className="w-6 h-6" aria-hidden="true" /></button>
             </div>
             <div className="p-4 flex flex-col gap-4">
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
-                  {settings.sound ? <Volume2 className="w-5 h-5 text-blue-600" /> : <VolumeX className="w-5 h-5 text-slate-400" />}
+                  {settings.sound ? <Volume2 className="w-5 h-5 text-blue-600" /> : <VolumeX className="w-5 h-5 text-slate-500" />}
                   <div>
-                    <div className="font-bold text-slate-700"><span><ruby>音<rt>おと</rt></ruby>を<ruby>鳴<rt>な</rt></ruby>らす</span></div>
-                    <div className="text-xs text-slate-500"><span><ruby>正解<rt>せいかい</rt></ruby>した<ruby>時<rt>とき</rt></ruby>に<ruby>音<rt>おと</rt></ruby>が<ruby>鳴<rt>な</rt></ruby>ります</span></div>
+                    <div className="font-bold text-slate-700"><span><ruby>音<rp>(</rp><rt>おと</rt><rp>)</rp></ruby>を<ruby>鳴<rp>(</rp><rt>な</rt><rp>)</rp></ruby>らす</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>正解<rp>(</rp><rt>せいかい</rt><rp>)</rp></ruby>した<ruby>時<rp>(</rp><rt>とき</rt><rp>)</rp></ruby>に<ruby>音<rp>(</rp><rt>おと</rt><rp>)</rp></ruby>が<ruby>鳴<rp>(</rp><rt>な</rt><rp>)</rp></ruby>ります</span></div>
                   </div>
                 </div>
                 <input type="checkbox" checked={settings.sound} onChange={(e) => setSettings({ ...settings, sound: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
@@ -1348,8 +1533,8 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <PenTool className="w-5 h-5 text-blue-600" />
                   <div>
-                    <div className="font-bold text-slate-700"><span><ruby>手書<rt>てが</rt></ruby>き<ruby>入力<rt>にゅうりょく</rt></ruby>を<ruby>使<rt>つか</rt></ruby>う</span></div>
-                    <div className="text-xs text-slate-500"><span><ruby>画面<rt>がめん</rt></ruby>に<ruby>文字<rt>もじ</rt></ruby>を<ruby>書<rt>か</rt></ruby>いて<ruby>入力<rt>にゅうりょく</rt></ruby>します</span></div>
+                    <div className="font-bold text-slate-700"><span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>き<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>を<ruby>使<rp>(</rp><rt>つか</rt><rp>)</rp></ruby>う</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>画面<rp>(</rp><rt>がめん</rt><rp>)</rp></ruby>に<ruby>文字<rp>(</rp><rt>もじ</rt><rp>)</rp></ruby>を<ruby>書<rp>(</rp><rt>か</rt><rp>)</rp></ruby>いて<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>します</span></div>
                   </div>
                 </div>
                 <input type="checkbox" checked={settings.handwriting} onChange={(e) => setSettings({ ...settings, handwriting: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
@@ -1359,8 +1544,8 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <Keyboard className="w-5 h-5 text-blue-600" />
                   <div>
-                    <div className="font-bold text-slate-700"><span>ボタン<ruby>入力<rt>にゅうりょく</rt></ruby>を<ruby>使<rt>つか</rt></ruby>う</span></div>
-                    <div className="text-xs text-slate-500"><span><ruby>画面<rt>がめん</rt></ruby>にテンキーを<ruby>表示<rt>ひょうじ</rt></ruby>します</span></div>
+                    <div className="font-bold text-slate-700"><span>ボタン<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>を<ruby>使<rp>(</rp><rt>つか</rt><rp>)</rp></ruby>う</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>画面<rp>(</rp><rt>がめん</rt><rp>)</rp></ruby>にテンキーを<ruby>表示<rp>(</rp><rt>ひょうじ</rt><rp>)</rp></ruby>します</span></div>
                   </div>
                 </div>
                 <input type="checkbox" checked={settings.numpad} onChange={(e) => setSettings({ ...settings, numpad: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
@@ -1370,8 +1555,8 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <CheckCircle className="w-5 h-5 text-blue-600" />
                   <div>
-                    <div className="font-bold text-slate-700"><span>すぐ<ruby>判定<rt>はんてい</rt></ruby>（<ruby>自動採点<rt>じどうさいてん</rt></ruby>）</span></div>
-                    <div className="text-xs text-slate-500"><span><ruby>入力<rt>にゅうりょく</rt></ruby>した<ruby>瞬間<rt>しゅんかん</rt></ruby>に<ruby>丸<rt>まる</rt></ruby>つけをします</span></div>
+                    <div className="font-bold text-slate-700"><span>すぐ<ruby>判定<rp>(</rp><rt>はんてい</rt><rp>)</rp></ruby>（<ruby>自動採点<rp>(</rp><rt>じどうさいてん</rt><rp>)</rp></ruby>）</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>した<ruby>瞬間<rp>(</rp><rt>しゅんかん</rt><rp>)</rp></ruby>に<ruby>丸<rp>(</rp><rt>まる</rt><rp>)</rp></ruby>つけをします</span></div>
                   </div>
                 </div>
                 <input type="checkbox" checked={settings.autoScore} onChange={(e) => setSettings({ ...settings, autoScore: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
@@ -1381,14 +1566,15 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <MoveHorizontal className="w-5 h-5 text-blue-600" />
                   <div>
-                    <div className="font-bold text-slate-700"><span><ruby>入力<rt>にゅうりょく</rt></ruby>ツールの<ruby>位置<rt>いち</rt></ruby></span></div>
-                    <div className="text-xs text-slate-500"><span><ruby>手書<rt>てが</rt></ruby>きやボタンの<ruby>場所<rt>ばしょ</rt></ruby>を<ruby>選<rt>えら</rt></ruby>びます</span></div>
+                    <div className="font-bold text-slate-700"><span><ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>ツールの<ruby>位置<rp>(</rp><rt>いち</rt><rp>)</rp></ruby></span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>きやボタンの<ruby>場所<rp>(</rp><rt>ばしょ</rt><rp>)</rp></ruby>を<ruby>選<rp>(</rp><rt>えら</rt><rp>)</rp></ruby>びます</span></div>
                   </div>
                 </div>
                 <select
+                  aria-label="入力ツールの位置"
                   value={settings.inputPosition || 'right'}
                   onChange={(e) => setSettings({ ...settings, inputPosition: e.target.value })}
-                  className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer"
+                  className="tap-44 bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer"
                 >
                   <option value="right">右側</option>
                   <option value="left">左側</option>
@@ -1396,7 +1582,7 @@ export default function App() {
               </label>
             </div>
             <div className="p-4 pt-0">
-              <button onClick={() => setShowSettings(false)} className="w-full btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span><ruby>閉<rt>と</rt></ruby>じる</span></button>
+              <button onClick={() => setShowSettings(false)} className="w-full btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span><ruby>閉<rp>(</rp><rt>と</rt><rp>)</rp></ruby>じる</span></button>
             </div>
           </div>
         </div>
@@ -1405,21 +1591,21 @@ export default function App() {
       {/* 📊 記録モーダル */}
       {showStats && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col max-h-[90vh]">
+          <div ref={statsBoxRef} role="dialog" aria-modal="true" aria-labelledby="stats-title" tabIndex={-1} className="modal-shell bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col">
             <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
-              <h3 className="font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-slate-600" /> <span>これまでの<ruby>記録<rt>きろく</rt></ruby></span></h3>
-              <button onClick={() => setShowStats(false)} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
+              <h2 id="stats-title" className="font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="w-5 h-5 text-slate-600" aria-hidden="true" /> <span>これまでの<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby></span></h2>
+              <button onClick={() => setShowStats(false)} className="tap-44 text-slate-500 hover:text-slate-700" aria-label="記録をとじる"><X className="w-6 h-6" aria-hidden="true" /></button>
             </div>
 
-            <div className="p-4 overflow-y-auto">
+            <div className="scroll-area p-4 overflow-y-auto">
               {studySummary && studySummary.sessions > 0 && (
                 <div className="bg-slate-800 text-white rounded-xl p-3 mb-5 flex justify-around text-center">
                   <div>
-                    <div className="text-xs text-slate-300 font-bold"><span>とりくんだ<ruby>回数<rt>かいすう</rt></ruby></span></div>
-                    <div className="text-2xl font-bold tabular-nums">{studySummary.sessions}<span className="text-sm ml-0.5"><ruby>回<rt>かい</rt></ruby></span></div>
+                    <div className="text-xs text-slate-300 font-bold"><span>とりくんだ<ruby>回数<rp>(</rp><rt>かいすう</rt><rp>)</rp></ruby></span></div>
+                    <div className="text-2xl font-bold tabular-nums">{studySummary.sessions}<span className="text-sm ml-0.5"><ruby>回<rp>(</rp><rt>かい</rt><rp>)</rp></ruby></span></div>
                   </div>
                   <div>
-                    <div className="text-xs text-slate-300 font-bold"><span><ruby>勉強<rt>べんきょう</rt></ruby>した<ruby>時間<rt>じかん</rt></ruby></span></div>
+                    <div className="text-xs text-slate-300 font-bold"><span><ruby>勉強<rp>(</rp><rt>べんきょう</rt><rp>)</rp></ruby>した<ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby></span></div>
                     <div className="text-2xl font-bold tabular-nums">{formatDuration(studySummary.studyMs)}</div>
                   </div>
                 </div>
@@ -1429,20 +1615,20 @@ export default function App() {
                 const study = studySummary?.byMode?.[MODE_ID[calcMode]];
                 return (
                 <div key={calcMode} className="mb-6 last:mb-0">
-                  <h4 className="font-bold text-lg text-slate-700 border-b-2 border-slate-200 pb-1 mb-3">
-                    {calcMode === 'たし算' ? <span>たし<ruby>算<rt>ざん</rt></ruby></span> : calcMode === '引き算' ? <span><ruby>引<rt>ひ</rt></ruby>き<ruby>算<rt>ざん</rt></ruby></span> : <span>かけ<ruby>算<rt>ざん</rt></ruby></span>}
-                  </h4>
+                  <h3 className="font-bold text-lg text-slate-700 border-b-2 border-slate-200 pb-1 mb-3">
+                    {calcMode === 'たし算' ? <span>たし<ruby>算<rp>(</rp><rt>ざん</rt><rp>)</rp></ruby></span> : calcMode === '引き算' ? <span><ruby>引<rp>(</rp><rt>ひ</rt><rp>)</rp></ruby>き<ruby>算<rp>(</rp><rt>ざん</rt><rp>)</rp></ruby></span> : <span>かけ<ruby>算<rp>(</rp><rt>ざん</rt><rp>)</rp></ruby></span>}
+                  </h3>
 
                   <div className="bg-slate-50 rounded-xl p-3 mb-3 border border-slate-200">
                     <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mb-2"><Trophy className="w-4 h-4" /> <span>ベストタイム</span></div>
                     <div className="flex gap-4 flex-wrap">
                       {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(c => records[calcMode].best[c] && (
                         <div key={`best-${c}`} className="bg-white px-2 py-1 rounded shadow-sm text-sm border border-slate-200">
-                          <span className="text-slate-400 text-xs mr-1"><span>{c}<ruby>問<rt>もん</rt></ruby>:</span></span>
-                          <span className="font-bold text-blue-600"><span>{records[calcMode].best[c].toFixed(1)}<ruby>秒<rt>びょう</rt></ruby></span></span>
+                          <span className="text-slate-500 text-xs mr-1"><span>{c}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby>:</span></span>
+                          <span className="font-bold text-blue-600"><span>{records[calcMode].best[c].toFixed(1)}<ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
                         </div>
                       ))}
-                      {Object.keys(records[calcMode].best).length === 0 && <span className="text-sm text-slate-400"><span>まだ<ruby>記録<rt>きろく</rt></ruby>がありません</span></span>}
+                      {Object.keys(records[calcMode].best).length === 0 && <span className="text-sm text-slate-500"><span>まだ<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby>がありません</span></span>}
                     </div>
                   </div>
 
@@ -1451,13 +1637,13 @@ export default function App() {
                       実力を映すのは「初回で正解できたか」の方 */}
                   {study && study.firstTryRate !== null && (
                     <div className="bg-blue-50 rounded-xl p-3 mb-3 border border-blue-200">
-                      <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mb-1">
+                      <div className="text-xs font-bold text-slate-600 flex items-center gap-1 mb-1">
                         <Target className="w-4 h-4" />
-                        <span><ruby>一発<rt>いっぱつ</rt></ruby>で<ruby>正解<rt>せいかい</rt></ruby>できた<ruby>率<rt>りつ</rt></ruby>（さいきん{study.recentSessions}<ruby>回<rt>かい</rt></ruby>）</span>
+                        <span><ruby>一発<rp>(</rp><rt>いっぱつ</rt><rp>)</rp></ruby>で<ruby>正解<rp>(</rp><rt>せいかい</rt><rp>)</rp></ruby>できた<ruby>率<rp>(</rp><rt>りつ</rt><rp>)</rp></ruby>（さいきん{study.recentSessions}<ruby>回<rp>(</rp><rt>かい</rt><rp>)</rp></ruby>）</span>
                       </div>
                       <div className="flex items-end gap-2">
                         <span className="text-3xl font-bold text-blue-700 tabular-nums">{Math.round(study.firstTryRate * 100)}%</span>
-                        <span className="text-xs text-slate-500 mb-1 tabular-nums">{study.recentFirstTryCorrect} / {study.recentAttempted}<ruby>問<rt>もん</rt></ruby></span>
+                        <span className="text-xs text-slate-600 mb-1 tabular-nums">{study.recentFirstTryCorrect} / {study.recentAttempted}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span>
                       </div>
                       <div className="h-2 bg-white rounded-full overflow-hidden mt-1.5 border border-blue-100">
                         <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.round(study.firstTryRate * 100)}%` }} />
@@ -1465,14 +1651,14 @@ export default function App() {
 
                       {study.weak.length > 0 && (
                         <div className="mt-3">
-                          <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mb-1.5">
-                            <Flame className="w-4 h-4" /> <span>よく<ruby>間違<rt>まちが</rt></ruby>えた<ruby>計算<rt>けいさん</rt></ruby></span>
+                          <div className="text-xs font-bold text-slate-600 flex items-center gap-1 mb-1.5">
+                            <Flame className="w-4 h-4" /> <span>よく<ruby>間違<rp>(</rp><rt>まちが</rt><rp>)</rp></ruby>えた<ruby>計算<rp>(</rp><rt>けいさん</rt><rp>)</rp></ruby></span>
                           </div>
                           <div className="flex flex-wrap gap-1.5">
                             {study.weak.map(w => (
                               <span key={w.q} className="bg-white border border-orange-200 text-slate-700 rounded-lg px-2 py-1 text-sm font-bold shadow-sm tabular-nums">
                                 {prettyQuestion(w.q)}
-                                <span className="text-orange-500 text-xs ml-1">{w.n}<ruby>回<rt>かい</rt></ruby></span>
+                                <span className="text-orange-700 text-xs ml-1">{w.n}<ruby>回<rp>(</rp><rt>かい</rt><rp>)</rp></ruby></span>
                               </span>
                             ))}
                           </div>
@@ -1480,28 +1666,28 @@ export default function App() {
                       )}
 
                       {study.aborted > 0 && (
-                        <div className="text-xs text-slate-400 mt-2">
-                          <span>とちゅうでやめた<ruby>回数<rt>かいすう</rt></ruby>: {study.aborted}<ruby>回<rt>かい</rt></ruby></span>
+                        <div className="text-xs text-slate-600 mt-2">
+                          <span>とちゅうでやめた<ruby>回数<rp>(</rp><rt>かいすう</rt><rp>)</rp></ruby>: {study.aborted}<ruby>回<rp>(</rp><rt>かい</rt><rp>)</rp></ruby></span>
                         </div>
                       )}
                     </div>
                   )}
 
-                  <div className="text-xs font-bold text-slate-400 flex items-center gap-1 mb-2"><History className="w-4 h-4" /> <span><ruby>最近<rt>さいきん</rt></ruby>の<ruby>記録<rt>きろく</rt></ruby>（20<ruby>回<rt>かい</rt></ruby>）</span></div>
+                  <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mb-2"><History className="w-4 h-4" /> <span><ruby>最近<rp>(</rp><rt>さいきん</rt><rp>)</rp></ruby>の<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby>（20<ruby>回<rp>(</rp><rt>かい</rt><rp>)</rp></ruby>）</span></div>
                   {records[calcMode].history.length > 0 ? (
                     <ul className="space-y-2">
                       {records[calcMode].history.map((hist, i) => (
                         <li key={i} className="flex justify-between items-center text-sm bg-white border border-slate-100 shadow-sm px-3 py-2 rounded-lg">
                           <span className="text-slate-500">{hist.date}</span>
                           <div>
-                            <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rt>もん</rt></ruby></span></span>
-                            <span className="font-bold text-slate-700 tabular-nums"><span>{hist.time.toFixed(1)}<ruby>秒<rt>びょう</rt></ruby></span></span>
+                            <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
+                            <span className="font-bold text-slate-700 tabular-nums"><span>{hist.time.toFixed(1)}<ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
                           </div>
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <div className="text-sm text-slate-400 text-center py-2"><span>まだ<ruby>記録<rt>きろく</rt></ruby>がありません</span></div>
+                    <div className="text-sm text-slate-500 text-center py-2"><span>まだ<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby>がありません</span></div>
                   )}
                 </div>
                 );
@@ -1509,7 +1695,7 @@ export default function App() {
             </div>
 
             <div className="p-4 pt-0 shrink-0 mt-4">
-              <button onClick={() => setShowStats(false)} className="w-full btn-press bg-slate-800 text-white font-bold py-3 rounded-xl hover:bg-slate-900"><span><ruby>閉<rt>と</rt></ruby>じる</span></button>
+              <button onClick={() => setShowStats(false)} className="w-full btn-press bg-slate-800 text-white font-bold py-3 rounded-xl hover:bg-slate-900"><span><ruby>閉<rp>(</rp><rt>と</rt><rp>)</rp></ruby>じる</span></button>
             </div>
           </div>
         </div>

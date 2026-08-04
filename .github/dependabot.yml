@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # 依存の更新は月1回に絞る。授業期間中に大量の PR が積み上がると
+  # 本当に見なければならない脆弱性の通知が埋もれるため。
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    # メジャー更新は授業を止めるリスクがあるため自動 PR の対象にしない
+    # （GIGA Standard v5 §絶対安全規則 6）。必要になったら手動で判断する。
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
