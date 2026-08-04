@@ -1,3 +1,238 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ==========================================================================
+   GIGA Standard v5 Part I §2 — 表示の土台
+   Chromebook（安価な液晶・メモリ4GB）と iPad を前提にした既定値。
+   ========================================================================== */
+
+:root {
+  /* --- セーフエリア（ノッチ・ホームバー・丸角）§2-3 --- */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+
+  /* --- 文字サイズ（fluid type）§2-4 ---
+     メディアクエリを何段も書かずに、320px のスマホから電子黒板まで通す */
+  --fs-body: clamp(15px, 1.6vw + 10px, 18px);
+  --fs-lead: clamp(18px, 2.2vw + 12px, 24px);
+  --fs-title: clamp(20px, 3.2vw + 12px, 32px);
+  /* いま解いている計算式。児童がいちばん見る「主役」なので思い切って大きく */
+  --fs-hero: clamp(26px, 4.5vw + 12px, 48px);
+
+  /* --- フォント §2-7 ---
+     学校のフィルタリングで fonts.googleapis.com が塞がれても字が崩れないよう、
+     端末側の日本語フォントを必ず後ろに並べる。Web フォントは「見た目だけ」の
+     依存なので、届かなくてもアプリは動く */
+  --font-ui: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Yu Gothic UI",
+    "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
+  /* 児童が字形を学ぶ場面（計算式）は教科書体を最優先 */
+  --font-textbook: "UD デジタル 教科書体 NK-R", "UD Digi Kyokasho NK-R",
+    "UD Digi Kyokasho N-R", "Zen Maru Gothic", "Kosugi Maru", sans-serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-body);
+  /* 児童向けは行間を広く */
+  line-height: 1.8;
+  /* ダブルタップズームの300ms遅延を消す。
+     ピンチでの拡大は残す（見えづらい子が拡大できないほうが害が大きい §2-1） */
+  touch-action: manipulation;
+  /* 横向き時にノッチ側が欠けないようにする §2-3 */
+  padding-left: var(--safe-l);
+  padding-right: var(--safe-r);
+}
+
+/* --- 画面の高さ §2-2 ---
+   100vh はモバイルのアドレスバー分だけはみ出す。必ず dvh を使う。 */
+.app-shell {
+  min-height: 100dvh;
+}
+
+@supports not (min-height: 100dvh) {
+  .app-shell {
+    min-height: 100vh;
+  }
+}
+
+/* 下部の固定要素はホームバー分を必ず足す */
+.safe-bottom {
+  padding-bottom: calc(8px + var(--safe-b));
+}
+
+/* 画面いっぱいに開くモーダルの高さも dvh で測る */
+.modal-shell {
+  max-height: 90dvh;
+}
+
+@supports not (max-height: 90dvh) {
+  .modal-shell {
+    max-height: 90vh;
+  }
+}
+
+/* --- タッチと操作 §2-9 --- */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.scroll-area {
+  /* 引っぱり更新の暴発を防ぐ */
+  overscroll-behavior: contain;
+}
+
+.canvas-area {
+  /* 手書き中に画面が動かない */
+  touch-action: none;
+}
+
+:focus-visible {
+  outline: 3px solid #1d4ed8;
+  outline-offset: 2px;
+}
+
+/* タップ領域 44px。
+   ⚠️ ボタン自体を大きくして満たしてはいけない。詰めて組んであるヘッダーに
+      min-height: 44px を当てると折り返しが起きて、計算ボードの高さを奪う。
+      疑似要素で「当たり判定だけ」を広げる（§2-9）。 */
+.tap-44 {
+  position: relative;
+}
+
+.tap-44::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* <select> は置換要素で疑似要素を持てないため、実寸で確保するしかない */
+select.tap-44 {
+  min-height: 44px;
+}
+
+select.tap-44::after {
+  content: none;
+}
+
+/* --- ふりがな §4 ---
+   ⚠️ rt の色を決め打ちしてはいけない。`rt { color: #666 }` のように書くと、
+      色のついたボタンや濃い面の上に重なったときに比 1.3 前後まで落ちる。
+      ふりがなが要るのは低学年の児童なので、「いちばん読めなくて困る人が
+      いちばん読めない」という形になる。
+      1か所ずつ潰すと必ず漏れるので、まとめて下の文字の色を継がせる。 */
+rt {
+  /* 白地での既定値（比 7.0:1） */
+  color: #475569;
+  font-size: .65em;
+  font-weight: 500;
+  line-height: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+ruby {
+  ruby-align: center;
+  vertical-align: baseline;
+}
+
+button rt,
+a rt,
+th rt,
+[class*="bg-"] rt,
+[class*="btn"] rt,
+[class*="text-white"] rt {
+  color: inherit;
+}
+
+/* --- 動きの配慮 §2-10 ---
+   ⚠️ .01ms であって 0 ではない。0 にすると animation-fill-mode: forwards が
+      効かなくなり、フェードインさせている要素が opacity: 0 のまま消える。
+      「動きを止める」つもりが「中身を消す」ことになる。 */
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* --- ハイコントラストモード §2-8 ---
+   背景色が無効化されても「押せる」と分かるように輪郭を残す */
+@media (forced-colors: active) {
+
+  button,
+  select,
+  a[href] {
+    border: 2px solid ButtonText;
+  }
+
+  .sq-table th,
+  .sq-table td {
+    border: 1px solid CanvasText;
+  }
+
+  /* 正誤は「色＋形＋ことば」で伝えているが、面の色が消えると差が無くなるため
+     枠線でも区別できるようにする */
+  .cell-correct {
+    border: 3px solid Highlight !important;
+  }
+}
+
+/* --- 印刷 §2-12 ---
+   先生が白紙のマスを刷って配ることがあるため、表だけがきれいに出るようにする。
+   印刷プレビューでの確認手順は MANUAL.md に書いてある */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    font-size: 10.5pt;
+    line-height: 1.5;
+    background: #fff;
+  }
+
+  nav,
+  footer,
+  .no-print,
+  button {
+    display: none !important;
+  }
+
+  .sq-table {
+    break-inside: avoid;
+  }
+
+  .sq-table th,
+  .sq-table td {
+    width: 16mm !important;
+    min-width: 16mm !important;
+    height: 16mm !important;
+    font-size: 14pt !important;
+  }
+
+  a[href]::after {
+    content: "";
+  }
+}

@@ -3,24 +3,71 @@
 
 <head>
   <meta charset="UTF-8" />
-  <link rel="icon" type="image/png" href="favicon.png" />
+
+  <!--
+    Content Security Policy（GIGA Standard v5 §2-13）
+
+    ⚠️ script-src に 'unsafe-inline' を足さないこと。足すと CSP を入れた意味が
+       ほとんど無くなる。インラインの <script> と onclick= は使わない設計にしてある
+       （インストールの合図の捕捉は install-hook.js に切り出してある）。
+
+    ⚠️ style-src の 'unsafe-inline' は外せない。React が style 属性で
+       マスの大きさを渡しており、これを外すと表が崩れる。
+
+    ⚠️ frame-ancestors はここには書かない。<meta> では無視され、
+       読み込みのたびにコンソールへ警告が出るだけになる。
+       他サイトへの埋め込みを止めるには HTTP ヘッダーが必要だが、
+       GitHub Pages では足せない。独自ドメインや CDN を挟むときに設定すること。
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self';
+    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+    font-src 'self' https://fonts.gstatic.com;
+    img-src 'self' data: blob:;
+    connect-src 'self';
+    worker-src 'self';
+    manifest-src 'self';
+    object-src 'none';
+    base-uri 'self';
+    form-action 'self';
+  " />
+
+  <!--
+    ① インストールの合図を「いちばん先に」受け取る。
+       Chrome は条件が揃うと即座に beforeinstallprompt を出すため、
+       React の読み込みより後だと合図を取りこぼし、通信が遅い端末で
+       「インストール」ボタンが出なくなる（§3-2）。
+  -->
+  <script src="/online-100square-calculation/install-hook.js"></script>
+
   <!-- interactive-widget=resizes-content: ソフトウェアキーボード表示時に画面を覆わず縮めて表示する (Chrome) -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta name="description" content="小学生向けの無料オンライン100マス計算。たし算・引き算・かけ算をタイム計測つきで練習できます。手書き入力にも対応。" />
   <meta name="theme-color" content="#334155" />
-  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
-  <meta name="mobile-web-app-capable" content="yes" />
+  <!-- 児童用アプリなので配色は固定する。端末のダークモードで色が反転すると
+       「正解=みどり／まちがい=あか」の手がかりが崩れる -->
+  <meta name="color-scheme" content="light" />
+
+  <link rel="icon" type="image/png" href="/online-100square-calculation/favicon.png" />
+  <!-- ⚠️ apple-touch-icon には透明を含む画像を指さない。
+       iOS は透明部分を黒で埋めるため、ホーム画面でアイコンの四隅だけが黒く出る。
+       apple-touch-icon.png は下地を端まで塗った専用画像（180×180・透明なし）。 -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/online-100square-calculation/apple-touch-icon.png" />
+
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="100マス計算" />
+
+  <!-- Web フォントは「見た目だけ」の依存なので CDN のまま許す（§2-7）。
+       学校のフィルタリングで fonts.googleapis.com が塞がれても、
+       index.css の --font-ui が端末側の日本語フォントへ落ちるので字は崩れない。 -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap" rel="stylesheet" />
+
   <title>100ます計算 | GIGA山</title>
-  <style>
-    body {
-      font-family: 'Zen Maru Gothic', sans-serif;
-    }
-  </style>
 </head>
 
 <body>
