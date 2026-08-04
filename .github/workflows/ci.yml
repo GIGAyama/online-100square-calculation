@@ -1,0 +1,32 @@
+name: CI
+
+# ⚠️ pull_request でも動かすこと。push: branches: [main] だけだと、
+#    PR の時点で落ちていることに気づけず、main に入ってから初めて分かる。
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      # 先読みキャッシュの量など、ビルドの成果物を見る検査があるため build のあとに走らせる
+      - name: GIGA Standard v5 品質ゲート
+        run: npm run check
+      # 「0件でした」だけでは検査が動いているか分からないので、
+      # わざと壊して反応することも毎回確かめる（§P4）
+      - name: 品質ゲートの自己テスト
+        run: npm run check -- --self-test

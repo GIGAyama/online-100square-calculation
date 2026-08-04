@@ -1,0 +1,35 @@
+{
+  "standard": "GIGA Standard v5",
+  "appId": "square100",
+  "repository": "online-100square-calculation",
+
+  "requiredFiles": [
+    "LICENSE",
+    ".gitignore",
+    ".github/dependabot.yml",
+    "README.md",
+    "MANUAL.md",
+    "AUDIT.md",
+    "public/offline.html",
+    "public/install-hook.js"
+  ],
+
+  "//forbiddenCdn": "ブラウザへ送られる実行コードの CDN 依存。1件でもあると、学校のフィルタリングで塞がれたときに画面が出ない",
+  "forbiddenCdn": [
+    "@babel/standalone",
+    "cdn.tailwindcss.com",
+    "unpkg.com",
+    "cdn.jsdelivr.net",
+    "cdnjs.cloudflare.com"
+  ],
+
+  "limits": {
+    "faviconKB": 30,
+    "iconKB": 60,
+    "imageKB": 150,
+    "fileLines": 5000,
+    "fileKB": 400,
+    "//precacheKB": "§8 総アセット（初回）1MB以下。校内 Wi-Fi で40人が同時に開く前提",
+    "precacheKB": 1024
+  }
+}

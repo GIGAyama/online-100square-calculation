@@ -100,11 +100,11 @@ GIGAスクール構想で導入された端末（ChromebookやiPadなど）で�
     
 *   **スタイリング:** Tailwind CSS
     
-*   **PWA:** vite-plugin-pwa (Workbox) — オフラインキャッシュ・ホーム画面インストール対応
+*   **PWA:** vite-plugin-pwa（`injectManifest`）+ **自前の `src/sw.js`**
     
-*   **アイコン:** Lucide React
+*   **アイコン:** Lucide React（SVG。画像ファイルを持たない）
     
-*   **AI・機械学習:** TensorFlow.js (手書き数字認識 / `model.json` を使用)
+*   **AI・機械学習:** TensorFlow.js（手書き数字認識 / `model.json` を使用）。**CDN からは読まず、npm で版を固定して自己ホストしている**
     
 *   **音声:** Web Audio API (外部音声ファイル不要の動的シンセサイザー)
     
@@ -113,34 +113,68 @@ GIGAスクール構想で導入された端末（ChromebookやiPadなど）で�
 
 ## 📁 ディレクトリ構成
 
-GitHub Pagesで公開するために必要なファイルは以下の4つのみです。
-
 ```
 .
-├── index.html            # アプリの土台（Reactや各種ライブラリの読み込み）
-├── src/App.jsx           # アプリの全UIとロジック（Reactコンポーネント）
-├── src/studyLog.js       # 学習ログ study.v1 の保存（全アプリ共通・同一ロジック）
-├── src/studySession.js   # 学習ログの組み立て（このアプリ固有）
-├── src/studyStats.js     # 学習ログの読み出し・集計（このアプリ専用）
-├── public/model.json     # AI手書き認識用のモデル定義ファイル
-├── public/group1-shard1of1.bin  # AI手書き認識用の重みデータファイル
-└── public/favicon.png    # アプリのアイコン画像
+├── index.html                    # アプリの土台。CSP と install-hook.js をここで読む
+├── src/App.jsx                   # アプリの全UIとロジック（Reactコンポーネント）
+├── src/main.jsx                  # 起動と Service Worker の登録
+├── src/pwa.js                    # Service Worker の登録・更新の案内（React の外側）
+├── src/sw.js                     # Service Worker 本体（ビルド時に dist/sw.js になる）
+├── src/index.css                 # GIGA Standard Part I §2 の土台（dvh / safe-area / clamp / ふりがな 他）
+├── src/studyLog.js               # 学習ログ study.v1 の保存（全アプリ共通・同一ロジック）
+├── src/studySession.js           # 学習ログの組み立て（このアプリ固有）
+├── src/studyStats.js             # 学習ログの読み出し・集計（このアプリ専用）
+├── public/install-hook.js        # インストールの合図（beforeinstallprompt）の捕捉
+├── public/offline.html           # 圏外のときの画面（外部資産にも JS にも頼らない）
+├── public/model.json             # AI手書き認識用のモデル定義ファイル
+├── public/group1-shard1of1.bin   # AI手書き認識用の重みデータファイル
+├── public/*.png                  # favicon / PWA アイコン（パレット PNG・6点で 144KB）
+├── scripts/check-project.mjs     # 品質ゲート（npm run check）
+├── scripts/lib/giga-v5-checks.mjs# GIGA Standard v5 Part I の検査
+├── quality.config.json           # 品質ゲートのしきい値
+├── AUDIT.md                      # 実測値と、測っていないものの明示
+└── MANUAL.md                     # 先生向けの使い方
 ```
+
+### 手を入れてよいもの／生成物
+
+| ファイル | 編集してよいか |
+|---|---|
+| `index.html` / `src/**` / `public/**` / `vite.config.js` | **ここを直す** |
+| `dist/**`（`dist/sw.js` を含む） | **手で編集しない**（`npm run build` の生成物） |
+
+**原本を直したら、必ず `npm run build` を走らせてから push すること。**
+
+## 🛠️ 開発
+
+```bash
+npm ci
+npm run dev        # 開発サーバー
+npm run build      # 本番ビルド（dist/）
+npm run check              # GIGA Standard v5 品質ゲート
+npm run check -- --self-test   # 検査そのものが動いているかを確かめる
+```
+
+`npm run check` はビルド成果物（先読みキャッシュの量など）も見るため、
+**`npm run build` のあとに走らせる。** CI（`.github/workflows/ci.yml`）は
+`pull_request` と `push` の両方で、build → check → 自己テストの順に走る。
+
+### リリース手順
+
+1. `src/**` を直す
+2. **`package.json` の `version` と `src/sw.js` の `APP_VERSION` を両方上げる**
+   （食い違うと `npm run check` が止める）
+3. `npm run build && npm run check`
+4. `main` へマージすると `.github/workflows/deploy.yml` が GitHub Pages へ公開する
 
 ## 🚀 デプロイ（公開）方法
 
-このアプリは、プログラミングの専門知識がなくてもGitHub Pagesを使って無料で公開できます。
+`main` への push で `.github/workflows/deploy.yml` が動き、
+`npm run build` の結果（`dist/`）を GitHub Pages へ公開します。
 
-1.  このリポジトリをフォーク（またはクローン）します。
-    
-2.  GitHubのリポジトリの `Settings` > `Pages` を開きます。
-    
-3.  `Build and deployment` の `Source` を `Deploy from a branch` に設定します。
-    
-4.  `Branch` を `main` (または master)、ディレクトリを `/(root)` に設定して `Save` を押します。
-    
-5.  1〜2分待つと、上部に公開されたURLが表示され、世界中からアクセスできるようになります。
-    
+リポジトリの `Settings` > `Pages` で、`Build and deployment` の `Source` を
+**`GitHub Actions`** にしておいてください（`Deploy from a branch` ではありません）。
+
 
 ## 💡 使い方（児童向け）
 
@@ -158,6 +192,21 @@ GitHub Pagesで公開するために必要なファイルは以下の4つのみ�
 
 6.  右上の「グラフ」ボタンから、これまでの自分の成長（記録・初回正答率・にがてな計算）を確認できます。
     
+
+## 🔒 設計上まもっていること（GIGA Standard v5）
+
+学校のネットワークと端末を前提に、次を守っています。実測値は [AUDIT.md](AUDIT.md) にあります。
+
+| 何を | なぜ |
+|---|---|
+| **実行コードを CDN から取らない**（0バイト） | 学校のフィルタリングで `cdn.jsdelivr.net` などが塞がれると、アプリが起動しない・機能が丸ごと死ぬ。しかも原因がアプリの外にあるため先生が調べても分からない |
+| **CSP を入れている**（`script-src 'self'`） | インラインの `<script>` と `onclick=` は使わない。インストールの合図の捕捉も `install-hook.js` に切り出してある |
+| **Service Worker は自アプリのキャッシュしか消さない** | `gigayama.github.io` は数十個のアプリが同一オリジンを共有している。`caches.keys()` の全削除は他アプリをオフラインで起動できなくする |
+| **更新は押すまで切り替えない** | 計算の途中で入れ替わると、打ちかけの答えも計測中のタイムも消える |
+| **`localStorage.clear()` を使わない** | `study.records.v1` は他アプリと共有している学習ログ。このアプリのリセット対象に含めてはならない |
+| **TensorFlow.js を先読みキャッシュに入れない** | 先読みが1MBを超えると、校内 Wi-Fi で40人が同時に開いたときの初回表示が止まる。手書きを使った端末だけが実行時に取り込む |
+| **拡大を禁止しない** | 誤ズーム防止より、見えづらい子が拡大できない害のほうが大きい |
+| **ふりがな（`rt`）の色を決め打ちしない** | 色のついたボタンの上でふりがなが読めなくなる。ふりがなが要るのは低学年の児童で、いちばん読めなくて困る人がいちばん読めない形になる |
 
 ## 👨‍🏫 開発者
 
