@@ -70,6 +70,23 @@ const BREAKAGES = [
       s.replace(/animation-duration: \.01ms/, 'animation-duration: 0ms')),
   },
   {
+    id: 'FORCED_COLORS_PAIR',
+    what: 'forced-colors の受けを「正解」だけにして、まちがいを外す',
+    apply: (dir) => patch(join(dir, 'src/index.css'), (s) =>
+      s.replace(/\n\s*\.cell-wrong \{\n\s*outline: 3px dashed CanvasText[^}]*\}/, '')),
+  },
+  {
+    id: 'PRESENTATION_MODE',
+    what: '提示モード（.presentation）を消す',
+    apply: (dir) => patch(join(dir, 'src/index.css'), (s) => s.replace(/\.presentation\b/g, '.pres-x')),
+  },
+  {
+    id: 'PRINT_SCROLL_CLIP',
+    what: '@media print の overflow の戻しを消す（紙で表が切れる形にする）',
+    apply: (dir) => patch(join(dir, 'src/index.css'), (s) =>
+      s.replace(/\n\s*\.scroll-area \{\n\s*overflow: visible !important;\n\s*\}/, '')),
+  },
+  {
     id: 'SW_CACHE_WIPE',
     what: 'sw.js の startsWith による絞り込みを外す（削除式は残す）',
     apply: (dir) => patch(join(dir, 'src/sw.js'), (s) =>

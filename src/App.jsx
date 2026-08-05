@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles } from 'lucide-react';
+import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2 } from 'lucide-react';
 import {
   APP_ID, MODE_ID, answerOf, inputMethodOf, allCellKeys,
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
@@ -485,6 +485,44 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleEsc);
   }, [showSettings, showStats, showQuitConfirm]);
 
+  // 🖥️ 提示モード（§2-11）
+  //
+  // 100マス計算は「先生の合図で一斉に始める」使い方が多く、電子黒板に映して
+  // 「今日はここ」「あと何問」を全員で見る場面がある。4K を 65〜75インチで
+  // 遠くから見るため、通常の大きさでは教室のうしろの席から数字が読めない。
+  // 押すと文字とマスを大きくし、あわせて全画面表示にする。
+  //
+  // ⚠️ 児童名・出席番号を扱わないアプリなので、提示モードで伏せる情報は無い。
+  const [presenting, setPresenting] = useState(false);
+
+  useEffect(() => {
+    document.body.classList.toggle('presentation', presenting);
+    return () => document.body.classList.remove('presentation');
+  }, [presenting]);
+
+  // ⚠️ 全画面は Esc やブラウザの UI からも解除される。それを拾わないと
+  //    「文字は大きいまま全画面ではない」というちぐはぐな状態が残り、
+  //    先生が同じボタンをもう一度押しても戻らなくなる。
+  useEffect(() => {
+    const sync = () => { if (!document.fullscreenElement) setPresenting(false); };
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+
+  const togglePresentation = useCallback(async () => {
+    if (presenting) {
+      setPresenting(false);
+      if (document.fullscreenElement) {
+        await document.exitFullscreen().catch(() => { });
+      }
+      return;
+    }
+    setPresenting(true);
+    // iPad の Safari は要素の全画面表示に対応していない。
+    // 全画面に入れなくても「大きくする」ところまでは効かせる
+    await document.documentElement.requestFullscreen?.().catch(() => { });
+  }, [presenting]);
+
   // 画面の「幅」と「残りの高さ」の両方からマスの大きさを自動計算し、
   // 横画面や 100 問モードでも全マスがスクロールなしで 1 画面に収まるようにする
   const gridWrapRef = useRef(null);
@@ -499,7 +537,12 @@ export default function App() {
       const rowsCount = tableData.rows.length + 1;
       const availH = window.innerHeight - el.getBoundingClientRect().top - 16;
       const byHeight = Math.floor((availH - (rowsCount + 1) * 2) / rowsCount);
-      const size = Math.min(56, byWidth, byHeight);
+      // 上限は CSS の --cell-max を正本にする。提示モードで body に .presentation が
+      // 付くと CSS 側だけが変わり、ここが古い上限のままだとマスが大きくならない
+      const cssMax = parseInt(
+        getComputedStyle(document.body).getPropertyValue('--cell-max'), 10
+      );
+      const size = Math.min(Number.isFinite(cssMax) ? cssMax : 56, byWidth, byHeight);
       // 22px を下回るほど画面が小さい時だけスクロールにフォールバック
       setCellSize(Math.max(22, size));
     };
@@ -511,8 +554,9 @@ export default function App() {
       ro.disconnect();
       window.removeEventListener('resize', compute);
     };
-    // gameState も依存に含める: 結果バナーの表示で表の上端位置が変わるため
-  }, [tableData, gameState]);
+    // gameState も依存に含める: 結果バナーの表示で表の上端位置が変わるため。
+    // presenting も含める: .presentation が付くと --cell-max が変わる
+  }, [tableData, gameState, presenting]);
 
   // TensorFlow.js 本体と、それを使う推論モデルを読み込む。
   //
@@ -1243,8 +1287,20 @@ export default function App() {
           -webkit-user-select: none;
           -webkit-touch-callout: none;
         }
-        .cell-correct { background-color: #dcfce7 !important; color: #166534; font-weight: bold; }
-        .cell-wrong { background-color: #fee2e2 !important; color: #991b1b; }
+        /* 正誤は色だけで伝えない（§2-8）。面の色に加えて「線の形」でも分ける。
+           正解＝実線の枠、まちがい＝破線の枠。色の見分けがつきにくい児童にも、
+           ハイコントラストで面の色が消える端末（index.css の forced-colors）にも
+           同じ手がかりが残る。
+           ⚠️ border ではなく outline を使う。border を足すとマスの中で数字が
+              1〜2px ずれて、100マスぜんぶがガタつく。 */
+        .cell-correct {
+          background-color: #dcfce7 !important; color: #166534; font-weight: bold;
+          outline: 3px solid #15803d; outline-offset: -3px;
+        }
+        .cell-wrong {
+          background-color: #fee2e2 !important; color: #991b1b;
+          outline: 3px dashed #b91c1c; outline-offset: -3px;
+        }
         @keyframes errorFlash {
           0% { background-color: #fca5a5; }
           100% { background-color: transparent; }
@@ -1306,6 +1362,13 @@ export default function App() {
             </button>
           )}
 
+          {/* 🖥️ 提示モード（§2-11）。電子黒板に映して一斉に取り組むときに使う */}
+          <button onClick={togglePresentation} aria-pressed={presenting} className="tap-44 p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title={presenting ? 'もとの大きさにもどす' : '大きく表示する（提示モード）'} aria-label={presenting ? 'もとの大きさにもどす' : '大きく表示する（提示モード）'}>
+            {presenting
+              ? <Minimize2 className="w-5 h-5" aria-hidden="true" />
+              : <Maximize2 className="w-5 h-5" aria-hidden="true" />}
+          </button>
+
           <button onClick={() => setShowStats(true)} className="tap-44 p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-full btn-press" title="記録" aria-label="これまでの記録をみる">
             <BarChart2 className="w-5 h-5" aria-hidden="true" />
           </button>
@@ -1318,8 +1381,9 @@ export default function App() {
       {/* 🟡 メインエリア */}
       <main className={`flex-grow w-full max-w-6xl p-2 sm:p-3 flex flex-col gap-3 items-start ${settings.inputPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'}`}>
 
-        {/* 左側（または右側）：計算ボード */}
-        <div className="w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-2 sm:p-3">
+        {/* 左側（または右側）：計算ボード
+            print-board … 紙では余白・枠・影を落として、表そのものに紙幅を使う（§2-12） */}
+        <div className="print-board w-full lg:flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-2 sm:p-3">
 
           {gameState === 'result' && (
             <div className="mb-3 bg-slate-100 border-2 border-slate-300 rounded-xl p-3 text-center" role="status" aria-live="polite">
@@ -1378,8 +1442,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* 右側（または左側）：入力支援ツール (手書き / テンキー) */}
-        <div className="w-full lg:w-80 flex flex-col gap-3 lg:sticky lg:top-14">
+        {/* 右側（または左側）：入力支援ツール (手書き / テンキー)
+            ⚠️ no-print が要る。先生が白紙のマスを刷って配るとき、手書き入力の枠が
+               そのまま紙に出て 69mm（A4 の縦の 1/4）を食っていた。
+               紙の上では手書きもテンキーも押せないので、まるごと落とす（§2-12）。 */}
+        <div className="tool-column no-print w-full lg:w-80 flex flex-col gap-3 lg:sticky lg:top-14">
 
           {/* 🔍 いま解いている計算：手書き・テンキーのすぐ上に表示して、
               視線を動かさずに「何の計算をしているか」「あと何問か」がわかる */}
