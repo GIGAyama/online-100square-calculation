@@ -21,6 +21,8 @@
   --fs-title: clamp(20px, 3.2vw + 12px, 32px);
   /* いま解いている計算式。児童がいちばん見る「主役」なので思い切って大きく */
   --fs-hero: clamp(26px, 4.5vw + 12px, 48px);
+  /* マスの大きさの上限。提示モードではここを持ち上げて、教室のうしろから読めるようにする */
+  --cell-max: 56px;
 
   /* --- フォント §2-7 ---
      学校のフィルタリングで fonts.googleapis.com が塞がれても字が崩れないよう、
@@ -189,11 +191,68 @@ th rt,
     border: 1px solid CanvasText;
   }
 
-  /* 正誤は「色＋形＋ことば」で伝えているが、面の色が消えると差が無くなるため
-     枠線でも区別できるようにする */
+  /* ⚠️ 正解の受けだけを書くと、まちがったマスが「未回答のマス」と
+        まったく同じ見た目になる。ハイコントラストでは面の色（赤・緑）が
+        どちらも消えるため、片方だけ手当てすると差が消えたことに気づけない。
+        実測でも、まちがったマスに手がかりが1つも残っていなかった。
+        正解＝実線／まちがい＝破線 と、線の形でも分けておく。 */
   .cell-correct {
-    border: 3px solid Highlight !important;
+    outline: 3px solid Highlight !important;
+    outline-offset: -3px;
   }
+
+  .cell-wrong {
+    outline: 3px dashed CanvasText !important;
+    outline-offset: -3px;
+  }
+}
+
+/* --- 提示モード §2-11 ---
+   電子黒板に映して一斉に取り組むとき、教室のいちばんうしろの席から
+   マスの数字が読めることが要件。教員が「大きく」を押すと body に .presentation が付く。
+   ⚠️ このアプリは児童名・出席番号を持たないので、提示モードで伏せる情報は無い。 */
+body.presentation {
+  font-size: calc(var(--fs-body) * 1.4);
+  --cell-max: 104px;
+}
+
+body.presentation button,
+body.presentation select {
+  min-height: 64px;
+}
+
+/* ⚠️ 文字だけ大きくしても、マスは大きくならない。
+      本文は max-w-6xl（1152px）で止めてあるため、3840px の電子黒板に映しても
+      表は 1152px のままで、実測でもマスは 69.8px から動かなかった。
+      提示モードでは横幅の上限を外して、画面いっぱいに表を広げる。 */
+body.presentation main {
+  max-width: none;
+}
+
+/* マスの数字は --cell に対する割合で決まる。提示モードでは割合も上げて、
+   マスいっぱいまで数字を大きくする（App.jsx の .sq-table 側の指定を上書きする） */
+body.presentation .sq-table th,
+body.presentation .sq-table td {
+  font-size: max(20px, calc(var(--cell, 48px) * 0.5));
+}
+
+body.presentation .sq-table td input {
+  font-size: max(20px, calc(var(--cell, 48px) * 0.5));
+}
+
+/* 主役（いま解いている計算式）も大きくする。
+   ⚠️ 画面幅だけを見て `--fs-hero: clamp(64px, 8vw, 160px)` のように上げてはいけない。
+      この計算式は幅 320px 固定の入力ツール列の中にあるので、字だけ大きくすると
+      列からはみ出す。実測では 3840px の画面で 372px はみ出し、横スクロールが出た。
+      列を広げてから、その幅に収まる範囲で大きくする。 */
+body.presentation .tool-column {
+  width: min(44rem, 34vw);
+}
+
+body.presentation {
+  /* 下限 48px は、ふつうの表示のときの上限と同じ。
+     提示モードにしたのに計算式が小さくなる、という逆転を起こさないため */
+  --fs-hero: clamp(48px, 3vw, 84px);
 }
 
 /* --- 印刷 §2-12 ---
@@ -220,8 +279,28 @@ th rt,
     display: none !important;
   }
 
+  /* ⚠️ 画面では overflow-x: auto が「はみ出したら横スクロール」だが、
+        紙には横スクロールが無いので、はみ出した分はそのまま切り取られる。
+        A4 縦（印刷可能幅 186mm）で実際に刷ると、10列目が 13.2px（約3.5mm）
+        切れていた。画面で見ているぶんには絶対に気づけない。
+        紙では切り取らず、そのまま並べる。 */
+  .scroll-area {
+    overflow: visible !important;
+  }
+
+  /* 画面用の余白・枠・影は紙では幅を食うだけ。表そのものに紙幅を使う */
+  .print-board {
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
   .sq-table {
     break-inside: avoid;
+    /* 16mm × 11列 で組む。画面用の w-full だと親の幅に合わせて伸び縮みしてしまう */
+    width: auto !important;
+    min-width: 0 !important;
   }
 
   .sq-table th,
