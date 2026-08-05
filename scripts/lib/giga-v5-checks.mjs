@@ -51,6 +51,53 @@ export function stripDvhFallbacks(src) {
   return out + src.slice(last);
 }
 
+/**
+ * `@media (…条件…) { … }` のブロックを、中括弧を数えて丸ごと取り出す。
+ * 正規表現で `}` まで取ると、入れ子の規則で途中打ち切りになる。
+ */
+export function mediaBlocks(src, conditionRe) {
+  const re = new RegExp(`@media[^{]*${conditionRe.source}[^{]*\\{`, 'g');
+  const out = [];
+  let m;
+  while ((m = re.exec(src))) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    const start = i;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    out.push(src.slice(start, i - 1));
+    re.lastIndex = i;
+  }
+  return out;
+}
+
+/** セレクタ部分に現れるクラス名を拾う（宣言の中身は見ない） */
+const classNamesInSelectors = (css) => {
+  const names = new Set();
+  // `{` の直前までをセレクタとみなす
+  for (const m of css.matchAll(/([^{}]+)\{/g)) {
+    for (const c of m[1].matchAll(/\.([A-Za-z_][\w-]*)/g)) names.add(c[1]);
+  }
+  return names;
+};
+
+/**
+ * 「面や文字の色そのもので意味を伝えているクラス」を拾う。
+ * ⚠️ 接頭辞が同じというだけで対にすると、`.cell-error-flash`（動きだけを付ける規則）まで
+ *    仲間に数えてしまう。実際に誤検知した。色を宣言しているかどうかまで見る。
+ */
+const colorCarryingClasses = (css) => {
+  const names = new Set();
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/(^|[\s;])(background-color|background|color)\s*:/.test(m[2])) continue;
+    for (const c of m[1].matchAll(/\.([A-Za-z_][\w-]*)/g)) names.add(c[1]);
+  }
+  return names;
+};
+
 const walk = (dir, out = []) => {
   if (!existsSync(dir)) return out;
   for (const name of readdirSync(dir)) {
@@ -161,6 +208,66 @@ export function runGigaChecks(root, cfg) {
   // ---- D11. forced-colors ----
   if (!srcFiles.some((f) => /forced-colors/.test(read(f) || ''))) {
     add('FORCED_COLORS', 'forced-colors（ハイコントラストモード）に対応していない');
+  }
+
+  // ---- D11. forced-colors の受けが「片方だけ」になっていないか ----
+  //
+  // ⚠️ 対になる状態（正解／まちがい、選択中／未選択）は、片方だけ受けると
+  //    誰も気づけない形で壊れる。ハイコントラストでは面の色が両方とも
+  //    消えるため、正解にだけ枠を足すと「まちがい」が「未回答」と
+  //    まったく同じ見た目になる。実際にそうなっていた（比較対象が無いので
+  //    スクリーンショットを見ても違和感が出ない）。
+  //
+  //    見るべきは「forced-colors で受けているクラスと同じ接頭辞を持つ
+  //    仲間のクラスが、自分のスタイルシートに定義されているのに受けていないか」。
+  {
+    const allCss = srcFiles.map((f) => stripComments(read(f) || '')).join('\n');
+    const received = new Set();
+    for (const block of mediaBlocks(allCss, /forced-colors/)) {
+      for (const n of classNamesInSelectors(block)) received.add(n);
+    }
+    // 自分のスタイルシートが「色で意味を伝えている」クラス
+    // （Tailwind の実用クラスは自分では定義していないので対象外）
+    const carriers = colorCarryingClasses(allCss);
+    const seen = new Set();
+    for (const name of received) {
+      const i = name.lastIndexOf('-');
+      if (i <= 0) continue;
+      const prefix = name.slice(0, i + 1);
+      for (const other of carriers) {
+        if (other === name || received.has(other) || !other.startsWith(prefix)) continue;
+        if (seen.has(other)) continue;
+        seen.add(other);
+        add('FORCED_COLORS_PAIR', `.${other} が forced-colors で受けられていない（.${name} は受けている）。ハイコントラストでは面の色が両方とも消えるため、片方だけ手当てすると差が消える`);
+      }
+    }
+  }
+
+  // ---- D12. 提示モード（一斉授業で使うアプリには必ず用意する §2-11） ----
+  if (cfg.presentationMode !== false
+    && !srcFiles.some((f) => /\.presentation\b/.test(stripComments(read(f) || '')))) {
+    add('PRESENTATION_MODE', '提示モード（.presentation）が無い。電子黒板に映したとき、教室のうしろの席から読めない');
+  }
+
+  // ---- D13. 紙には横スクロールが無い ----
+  //
+  // ⚠️ 画面では overflow-x: auto が「はみ出したら横スクロール」だが、
+  //    紙にはスクロールが無いので、はみ出した分はそのまま切り取られる。
+  //    実測では A4 縦に刷った 100マスの 10 列目が 3.5mm 切れていた。
+  //    画面を見ているだけでは絶対に気づけない。
+  //
+  // ⚠️ ファイルごとに見てはいけない。スクロールさせているのは JSX 側の
+  //    Tailwind クラス（overflow-x-auto）で、@media print はスタイルシートにある。
+  //    別々のファイルなので、1ファイルずつ見ると永久に一致せず、検査が
+  //    「何も見ていないのに通る」状態になる。実際にそうなっていた。
+  {
+    const all = srcFiles.map((f) => stripComments(read(f) || '')).join('\n');
+    const printBlocks = mediaBlocks(all, /print/);
+    const scrolls = /overflow(-[xy])?\s*:\s*(auto|scroll)/.test(all)
+      || /\boverflow(-[xy])?-(auto|scroll)\b/.test(all);   // Tailwind の実用クラス
+    if (printBlocks.length > 0 && scrolls && !printBlocks.some((b) => /overflow/.test(b))) {
+      add('PRINT_SCROLL_CLIP', 'overflow: auto でスクロールさせているのに、@media print で戻していない。紙には横スクロールが無いので、はみ出した分はそのまま切り取られる');
+    }
   }
 
   // ---- F4. rt の色を決め打ちしていないか ----

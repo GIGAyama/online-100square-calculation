@@ -14,6 +14,9 @@
     "public/install-hook.js"
   ],
 
+  "//presentationMode": "一斉授業で電子黒板に映す使い方があるアプリか（§2-11）。個人の端末だけで使うアプリは false にしてよい",
+  "presentationMode": true,
+
   "//forbiddenCdn": "ブラウザへ送られる実行コードの CDN 依存。1件でもあると、学校のフィルタリングで塞がれたときに画面が出ない",
   "forbiddenCdn": [
     "@babel/standalone",
