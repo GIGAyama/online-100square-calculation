@@ -8,8 +8,11 @@
  */
 import { saveStudyRecord } from './studyLog';
 
-// アプリのバージョンは package.json と揃えて、この1箇所だけで管理する
-export const APP_VERSION = '1.3.1';
+// 学習ログの appVersion に入れるアプリの版。
+// ⚠️ package.json の version・src/sw.js の APP_VERSION と必ず揃えること。
+//    品質ゲートが見ているのは sw.js と package.json の2つだけなので、
+//    ここは上げ忘れても止まらない（README「リリース手順」に手順を書いてある）
+export const APP_VERSION = '1.5.0';
 export const APP_ID = 'square100';
 
 // 内部で使っている日本語のモード名 → 集計用の英数小文字。
