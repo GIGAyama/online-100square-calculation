@@ -12,7 +12,7 @@
 const CACHE_PREFIX = 'square100-';
 // ⚠️ リリースごとに必ず上げる。package.json の version と一致させること
 //    （`npm run check` の APP_VERSION 検査が食い違いを見つける）
-const APP_VERSION = 'v1.5.0';
+const APP_VERSION = 'v1.6.0';
 const CACHE_STATIC = CACHE_PREFIX + 'static-' + APP_VERSION;
 const CACHE_RUNTIME = CACHE_PREFIX + 'runtime-' + APP_VERSION;
 

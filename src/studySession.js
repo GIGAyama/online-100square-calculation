@@ -12,7 +12,7 @@ import { saveStudyRecord } from './studyLog';
 // ⚠️ package.json の version・src/sw.js の APP_VERSION と必ず揃えること。
 //    品質ゲートが見ているのは sw.js と package.json の2つだけなので、
 //    ここは上げ忘れても止まらない（README「リリース手順」に手順を書いてある）
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.6.0';
 export const APP_ID = 'square100';
 
 // 内部で使っている日本語のモード名 → 集計用の英数小文字。

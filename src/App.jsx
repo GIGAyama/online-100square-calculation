@@ -238,10 +238,18 @@ const Cell = memo(({
   r, c, val, ans, isActive, disabled, autoScore, suppressOsKeyboard, ariaLabel,
   onFocus, onChange, onKeyDown, inputRefs
 }) => {
+  // 正誤の色を出してよいのは「採点が済んでいる」ときだけ。
+  // ⚠️ すぐ判定（自動採点）をオフにしたのに色がその場で付くと、設定の意味が無くなる。
+  //    「あとでまとめて丸つけする」ために切っているのに、入力した瞬間に赤と緑が出て
+  //    しまい、紙のテストのように最後まで自分で解ききる練習ができない。
+  //    すぐ判定オフのときは、採点が終わった後（プレイ中でない＝disabled）に見せる。
+  const marked = autoScore || disabled;
   let cellClass = "";
-  if (val !== '') {
+  if (marked && val !== '') {
     if (parseInt(val, 10) === ans) cellClass = "cell-correct border-green-400";
-    else if (val.length >= String(ans).length) cellClass = "cell-wrong border-red-400";
+    // すぐ判定オンのときは打っている途中で赤くしない（12 の «1» で赤が出る）。
+    // 採点後にまとめて見せる場合は、桁が足りない答えも「まちがい」として示す
+    else if (!autoScore || val.length >= String(ans).length) cellClass = "cell-wrong border-red-400";
   }
 
   // 不正解で値がクリアされた時だけ赤くフラッシュさせる
@@ -1248,17 +1256,22 @@ export default function App() {
   // 設問ID（8*9）は集計用の表記なので、表示のときだけ「×」に戻す
   const prettyQuestion = (q) => q.replace('*', '×');
 
-  // 正解済みマスの数（進み具合バナー用）
+  // 済んだマスの数（「のこり ○問」用）。
+  // すぐ判定オンのときは「正解できたマス」、オフのときは「入力したマス」を数える。
+  // ⚠️ オフのときに正解数を数えると、色を伏せても «のこり» が減らないことで
+  //    まちがいが分かってしまう。数え方も終わり方に合わせる
+  //    （オフの終了条件は「全部のマスが埋まったとき」）
   const solvedCount = useMemo(() => {
     let n = 0;
     for (let r = 0; r < tableData.rows.length; r++) {
       for (let c = 0; c < tableData.cols.length; c++) {
         const val = inputs[`${r}_${c}`];
-        if (val !== undefined && val !== '' && parseInt(val, 10) === getCorrectAnswer(r, c)) n++;
+        if (val === undefined || val === '') continue;
+        if (!settings.autoScore || parseInt(val, 10) === getCorrectAnswer(r, c)) n++;
       }
     }
     return n;
-  }, [inputs, tableData, getCorrectAnswer]);
+  }, [inputs, tableData, getCorrectAnswer, settings.autoScore]);
 
   // app-shell = 100dvh。100vh はモバイルのアドレスバー分だけはみ出す（§2-2）
   return (
