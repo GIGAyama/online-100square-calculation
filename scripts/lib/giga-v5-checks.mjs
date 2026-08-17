@@ -324,11 +324,22 @@ export function runGigaChecks(root, cfg) {
   const viteCfg = read(join(root, 'vite.config.js')) || '';
   const manifestJson = read(join(root, 'manifest.webmanifest'));
   const manifestSrc = manifestJson || viteCfg;
+  // 正しい値は「どこで配信するか」で変わる。
+  // 独自ドメイン（CNAME あり）だとアプリはサブドメインの直下に置かれる。
+  //   https://online-100square-calculation.giga-school.com/
+  // ここでリポジトリ名の絶対パスのままにすると scope がページの URL を含まなくなり、
+  // manifest ごと無視されて PWA としてインストールできなくなる。
+  // CNAME が無ければ従来どおり共有オリジンのサブディレクトリ配信なので、
+  // リポジトリ名の絶対パスでないと同居する別アプリと取り違えられる。
+  const hasCname = !!(read(join(root, 'CNAME')) || read(join(root, 'public', 'CNAME')));
   for (const key of ['id', 'scope', 'start_url']) {
     const m = manifestSrc.match(new RegExp(`["']?${key}["']?\\s*:\\s*["']([^"']+)["']`));
     if (!m) add('MANIFEST_PATH', `manifest に ${key} が無い`);
-    else if (!m[1].startsWith('/') || m[1] === '/') {
-      add('MANIFEST_PATH', `manifest の ${key} が「${m[1]}」。同一オリジンを共有しているので、リポジトリ名の絶対パスにする`);
+    else if (hasCname ? !m[1].startsWith('./') : (!m[1].startsWith('/') || m[1] === '/')) {
+      add('MANIFEST_PATH', `manifest の ${key} が「${m[1]}」。`
+        + (hasCname
+          ? 'サブドメイン直下で配信するので相対パス "./" にする'
+          : '同一オリジンを共有しているので、リポジトリ名の絶対パスにする'));
     }
   }
 

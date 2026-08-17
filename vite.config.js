@@ -23,14 +23,14 @@ export default defineConfig({
         // ⚠️ id / scope / start_url は必ずリポジトリ名の絶対パスにする。
         //    gigayama.github.io は数十個のアプリが同一オリジンを共有しており、
         //    ここが曖昧だと「開いたら違うアプリが立ち上がる」事故が起きる。
-        id: '/online-100square-calculation/',
+        id: './',
         name: '100マス計算 | GIGA山',
         short_name: '100マス計算',
         description: '小学生向けの無料オンライン100マス計算。たし算・引き算・かけ算をタイム計測つきで練習できます。手書き入力にも対応。',
         lang: 'ja',
         dir: 'ltr',
-        start_url: '/online-100square-calculation/',
-        scope: '/online-100square-calculation/',
+        start_url: './',
+        scope: './',
         display: 'standalone',
         display_override: ['standalone', 'fullscreen', 'minimal-ui'],
         launch_handler: { client_mode: ['navigate-existing', 'auto'] },
@@ -68,5 +68,5 @@ export default defineConfig({
       },
     },
   },
-  base: '/online-100square-calculation/',
+  base: './',
 })

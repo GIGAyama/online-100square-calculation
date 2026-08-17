@@ -111,9 +111,11 @@ const BREAKAGES = [
   },
   {
     id: 'MANIFEST_PATH',
-    what: 'manifest の start_url を "./" に戻す',
+    // "./" は独自ドメインでの正しい値なので、もう壊れた形ではない。
+    // いまの壊れ方は、サブドメイン直下で配信するのにリポジトリ名の絶対パスが残っていること。
+    what: 'manifest の start_url をリポジトリ名の絶対パスに戻す',
     apply: (dir) => patch(join(dir, 'vite.config.js'), (s) =>
-      s.replace(/start_url: '[^']*'/, "start_url: './'")),
+      s.replace(/start_url: '[^']*'/, "start_url: '/online-100square-calculation/'")),
   },
   {
     id: 'CSP_UNSAFE_INLINE',
@@ -131,8 +133,8 @@ const BREAKAGES = [
     id: 'INSTALL_HOOK',
     what: 'install-hook.js の読み込みを <head> の後ろへ動かす',
     apply: (dir) => patch(join(dir, 'index.html'), (s) =>
-      s.replace('<script src="/online-100square-calculation/install-hook.js"></script>', '')
-        .replace('</head>', '<script src="/online-100square-calculation/install-hook.js"></script></head>')),
+      s.replace('<script src="./install-hook.js"></script>', '')
+        .replace('</head>', '<script src="./install-hook.js"></script></head>')),
   },
   {
     id: 'LOCALSTORAGE_CLEAR',
