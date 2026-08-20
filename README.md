@@ -4,7 +4,7 @@ GIGAスクール構想で導入された端末（ChromebookやiPadなど）で�
 
 学校のネットワーク環境（フィルタリングや回線速度）に左右されず、ブラウザを開いた瞬間にサクサク動くことを最優先に開発されました。
 
-*   **公開先:** <https://gigayama.github.io/online-100square-calculation/>
+*   **公開先:** <https://online-100square-calculation.giga-school.com/>
 *   **先生向けの使い方:** [MANUAL.md](MANUAL.md)
 *   **実測値と、測っていないもの:** [AUDIT.md](AUDIT.md)
 
@@ -245,7 +245,7 @@ npm run check -- --self-test   # 検査そのものが動いているかを確�
 |---|---|
 | **実行コードを CDN から取らない**（0バイト） | 学校のフィルタリングで `cdn.jsdelivr.net` などが塞がれると、アプリが起動しない・機能が丸ごと死ぬ。しかも原因がアプリの外にあるため先生が調べても分からない |
 | **CSP を入れている**（`script-src 'self'`） | インラインの `<script>` と `onclick=` は使わない。インストールの合図の捕捉も `install-hook.js` に切り出してある |
-| **Service Worker は自アプリのキャッシュしか消さない** | `gigayama.github.io` は数十個のアプリが同一オリジンを共有している。`caches.keys()` の全削除は他アプリをオフラインで起動できなくする |
+| **Service Worker は自アプリのキャッシュしか消さない** | 旧配信元の `gigayama.github.io` は数十個のアプリが同一オリジンを共有していた。同居する配置に戻したとき、`caches.keys()` の全削除は他アプリをオフラインで起動できなくする |
 | **更新は押すまで切り替えない** | 計算の途中で入れ替わると、打ちかけの答えも計測中のタイムも消える |
 | **`localStorage.clear()` を使わない** | `study.records.v1` は他アプリと共有している学習ログ。このアプリのリセット対象に含めてはならない |
 | **TensorFlow.js を先読みキャッシュに入れない** | 先読みが1MBを超えると、校内 Wi-Fi で40人が同時に開いたときの初回表示が止まる。手書きを使った端末だけが実行時に取り込む |

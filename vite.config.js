@@ -18,11 +18,16 @@ export default defineConfig({
       // 登録処理は src/pwa.js が readyState を見て自分で行う（§3-6）。
       // プラグインに差し込ませると登録の位置と更新の案内を制御できない
       injectRegister: null,
-      includeAssets: ['favicon.png', 'apple-touch-icon.png', 'install-hook.js', 'offline.html'],
+      includeAssets: ['favicon.png', 'apple-touch-icon.png', 'install-hook.js', 'offline.html',
+        // 学習ログの受け渡し口。集計ページが同一サイトの iframe で開く
+        'records-export.html', 'records-export.js'],
       manifest: {
-        // ⚠️ id / scope / start_url は必ずリポジトリ名の絶対パスにする。
-        //    gigayama.github.io は数十個のアプリが同一オリジンを共有しており、
-        //    ここが曖昧だと「開いたら違うアプリが立ち上がる」事故が起きる。
+        // ⚠️ id / scope / start_url は "./"（＝配信されている場所そのもの）にする。
+        //    独自ドメイン online-100square-calculation.giga-school.com へ移り、
+        //    アプリはドメイン直下に置かれている。旧構成
+        //    （gigayama.github.io/online-100square-calculation/）のような
+        //    リポジトリ名の絶対パスに戻すと、scope がページの URL を含まなくなり、
+        //    manifest ごと無視されて PWA としてインストールできなくなる。
         id: './',
         name: '100マス計算 | GIGA山',
         short_name: '100マス計算',

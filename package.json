@@ -1,7 +1,7 @@
 {
   "name": "online-100square-calculation",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -2,7 +2,8 @@
  * 100マス計算 — Service Worker（GIGA Standard v5 §3-3）
  *
  * 【重要】activate では自アプリ以外のキャッシュを削除しない。
- *   gigayama.github.io は数十個のアプリが同一オリジンを共有しているため、
+ *   旧配信元の gigayama.github.io は数十個のアプリが同一オリジンを共有していた。
+ *   同居する配置に戻したときに他アプリを巻き込まないよう、
  *   CACHE_PREFIX で始まるキャッシュだけを掃除する。
  *   （caches.keys() を全消しすると、他のアプリがオフラインで起動しなくなる）
  *
@@ -12,7 +13,7 @@
 const CACHE_PREFIX = 'square100-';
 // ⚠️ リリースごとに必ず上げる。package.json の version と一致させること
 //    （`npm run check` の APP_VERSION 検査が食い違いを見つける）
-const APP_VERSION = 'v1.6.0';
+const APP_VERSION = 'v1.7.0';
 const CACHE_STATIC = CACHE_PREFIX + 'static-' + APP_VERSION;
 const CACHE_RUNTIME = CACHE_PREFIX + 'runtime-' + APP_VERSION;
 
@@ -59,7 +60,10 @@ self.addEventListener('fetch', (e) => {
       try {
         return await fetch(req);
       } catch {
-        return (await caches.match('./index.html'))
+        // 圏外。まず「開こうとした画面そのもの」を探す。これを飛ばして
+        // index.html から返すと、圏外では利用規約を開いてもアプリが出る。
+        return (await caches.match(req))
+          || (await caches.match('./index.html'))
           || (await caches.match('./offline.html'))
           || Response.error();
       }
