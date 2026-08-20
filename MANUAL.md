@@ -3,7 +3,7 @@
 このアプリは、タブレットや Chromebook で 100マス計算に取り組むためのものです。
 インターネットにつながっていなくても使えます。名前や出席番号は一切入力しません。
 
-- 開くところ … <https://gigayama.github.io/online-100square-calculation/>
+- 開くところ … <https://online-100square-calculation.giga-school.com/>
 
 ---
 

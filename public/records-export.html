@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>学習ログの受け渡し口｜100マス計算</title>
+  <!-- 検索結果に出す意味がなく、児童が直接開く画面でもない -->
+  <meta name="robots" content="noindex, nofollow" />
+
+  <!-- このページは localStorage を読んで postMessage で返すだけ。
+       画像も通信も要らないので、既定を 'none' にして必要な分だけ開ける。 -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self';
+    style-src 'self' 'unsafe-inline';
+    base-uri 'self';
+    form-action 'none';
+  " />
+
+  <style>
+    body {
+      margin: 0; padding: 1.5rem;
+      font-family: system-ui, sans-serif;
+      color: #1f2937; background: #f8fafc;
+      line-height: 1.7;
+    }
+    p { max-width: 40rem; }
+  </style>
+</head>
+<body>
+  <!-- 人が直接開いてしまったときのための説明。
+       集計ページからは iframe で開かれ、この文字は見えない。 -->
+  <p>
+    このページは、100マス計算の学習記録を
+    <a href="https://giga-school.com/">GIGA school</a> の集計ページへ
+    受け渡すためのものです。画面として使うものではありません。
+  </p>
+  <p>
+    記録は端末の中にあり、受け渡し先は giga-school.com とそのサブドメインに限っています。
+    このページが記録を書きかえたり消したりすることはありません。
+  </p>
+  <p><a href="./">← 100マス計算に もどる</a></p>
+
+  <script type="module" src="./records-export.js"></script>
+</body>
+</html>
