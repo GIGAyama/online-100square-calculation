@@ -30,3 +30,19 @@ jobs:
       # わざと壊して反応することも毎回確かめる（§P4）
       - name: 品質ゲートの自己テスト
         run: npm run check -- --self-test
+      # 学習ログの受け渡し口（records-export）が壊れていないか
+      - name: 学習ログのテスト
+        run: npm test
+
+  # 正本コピー（standards-map.json に載るファイル）が
+  # GIGAyama.github.io/standards/ とずれていないか
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: GIGAyama/GIGAyama.github.io
+          path: .standards-src
+      - name: 正本とのずれ検知
+        run: node .standards-src/standards/check-drift.mjs --standards .standards-src/standards

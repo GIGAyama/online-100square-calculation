@@ -26,6 +26,7 @@
     font-src 'self' https://fonts.gstatic.com;
     img-src 'self' data: blob:;
     connect-src 'self';
+    frame-src 'self' https://gamification.giga-school.com;
     worker-src 'self';
     manifest-src 'self';
     object-src 'none';
@@ -84,6 +85,8 @@
 <body>
   <div id="root"></div>
   <script type="module" src="/src/main.jsx"></script>
+  <!-- 学習ログを記録ハブ（まなびクエスト）へ写す。読むだけで、このアプリの記録には触れない -->
+  <script src="./records-hub-client.js" defer></script>
 </body>
 
 </html>
