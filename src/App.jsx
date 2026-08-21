@@ -1544,7 +1544,7 @@ export default function App() {
       </main>
 
       <footer className="no-print safe-bottom w-full bg-white border-t border-slate-200 pt-3 pb-2 text-center text-sm text-slate-500 font-bold shadow-sm mt-auto">
-        © 2026 100マス計算 <a href="https://note.com/cute_borage86" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline">GIGA山</a>
+        © 2026 100マス計算 <a href="https://giga-school.com" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline">GIGA山</a>
       </footer>
 
       {/* 🔄 あたらしい版のおしらせ（§3-3）
