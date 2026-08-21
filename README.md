@@ -259,7 +259,7 @@ npm run check -- --self-test   # 検査そのものが動いているかを確�
 
 *   **GIGA山**
 
-*   [note: GIGA山の教育実践](https://note.com/cute_borage86)
+*   [GIGA山のホームページ](https://giga-school.com)
 
 
 ## 📄 ライセンス

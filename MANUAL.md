@@ -229,4 +229,4 @@ Safari には自動の案内が出ません。次の手順で入れてくださ�
 
 ---
 
-© 2026 100マス計算 / [GIGA山](https://note.com/cute_borage86)
+© 2026 100マス計算 / [GIGA山](https://giga-school.com)
