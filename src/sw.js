@@ -11,9 +11,13 @@
  * 学習ログ `study.records.v1` は複数アプリ共通のため、ここから触れてはならない。
  */
 const CACHE_PREFIX = 'square100-';
-// ⚠️ リリースごとに必ず上げる。package.json の version と一致させること
-//    （`npm run check` の APP_VERSION 検査が食い違いを見つける）
-const APP_VERSION = 'v1.7.1';
+// ⚠️ この行は手で直さない。`npm run build` のあと tools/build-sw.mjs が
+//    dist/sw.js の版を「配信物の中身のハッシュ」に書き換える。
+//    手書きだったころは package.json の version と揃えるのが決まりだったが、
+//    2026-08-21 に12リポジトリで同時に上げ忘れる事故が起きた。上げ忘れると
+//    古いシェルのキャッシュが掃除されず、直した画面が児童の端末に一度も
+//    届かないまま「直したはずなのに直らない」が続く。
+const APP_VERSION = '__APP_VERSION__';
 const CACHE_STATIC = CACHE_PREFIX + 'static-' + APP_VERSION;
 const CACHE_RUNTIME = CACHE_PREFIX + 'runtime-' + APP_VERSION;
 

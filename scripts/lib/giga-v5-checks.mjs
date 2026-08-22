@@ -312,11 +312,42 @@ export function runGigaChecks(root, cfg) {
       add('SW_SKIP_WAITING', "sw.js の install で skipWaiting している。計算の途中で入れ替わり、打ちかけの答えとタイムが消える");
     }
 
-    // E11. APP_VERSION が package.json の版と揃っているか（上げ忘れ対策）
-    const v = raw.match(/APP_VERSION\s*=\s*['"]v?([^'"]+)['"]/);
+    // E11. APP_VERSION が自動生成になっているか
+    //
+    // 以前は「sw.js の APP_VERSION と package.json の version が揃っているか」を
+    // 見ていた。ふたつとも手書きなので、両方いっしょに上げ忘れれば揃ったまま緑になる。
+    // 2026-08-21 に12リポジトリで同時に上げ忘れる事故が起きたのがその形。
+    // いまは tools/build-sw.mjs が配信物の中身から版を作るので、
+    // 見るべきは「目印が残っているか」と「生成器が配線されているか」になった。
+    const v = raw.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
     if (!v) add('SW_APP_VERSION', 'sw.js に APP_VERSION が無い');
-    else if (pkg.version && v[1] !== pkg.version) {
-      add('SW_APP_VERSION', `sw.js の APP_VERSION (${v[1]}) が package.json の version (${pkg.version}) と違う。リリースごとに両方上げる`);
+    else if (v[1] !== '__APP_VERSION__') {
+      add('SW_APP_VERSION',
+        `sw.js の APP_VERSION が手書き（${v[1]}）に戻っている。`
+        + "const APP_VERSION = '__APP_VERSION__'; にして、版は tools/build-sw.mjs に作らせること");
+    }
+    if (!existsSync(join(root, 'tools/build-sw.mjs'))) {
+      add('SW_APP_VERSION', 'tools/build-sw.mjs がありません。版の自動生成が外れています');
+    } else if (!/build-sw\.mjs/.test(pkg.scripts?.build || '')) {
+      add('SW_APP_VERSION', 'package.json の build が tools/build-sw.mjs を呼んでいません。版が据え置きのまま配られます');
+    }
+  }
+
+  // ---- E12. 学習記録に刻む版が package.json と揃っているか ----
+  //
+  // studySession.js の APP_VERSION は、書き出す学習記録の appVersion に入る。
+  // 手で揃える決まりだったが、README にも「ここは品質ゲートが見ないので手で
+  // 確認すること」と書いてあり、実際 1.6.0 のまま package.json が 1.7.1 に
+  // なっていた（2026-08-22 に発見）。その間の記録はすべて誤った版で残っている。
+  // 記録は児童の学習の履歴なので、あとから版で絞り込めなくなる。
+  const study = read(join(root, 'src/studySession.js'));
+  if (study) {
+    const sv = study.match(/APP_VERSION\s*=\s*['"]v?([^'"]+)['"]/);
+    if (!sv) add('STUDY_APP_VERSION', 'src/studySession.js に APP_VERSION が無い');
+    else if (pkg.version && sv[1] !== pkg.version) {
+      add('STUDY_APP_VERSION',
+        `src/studySession.js の APP_VERSION (${sv[1]}) が package.json の version (${pkg.version}) と違う。`
+        + '学習記録の appVersion に誤った版が残ります');
     }
   }
 

@@ -1,0 +1,4 @@
+{
+  "//": "先読み一覧は vite-plugin-pwa の injectManifest が作る（vite.config.js の globPatterns / globIgnores）。ここでは版だけを dist の中身から刻む。",
+  "precacheManagedByPlugin": true
+}

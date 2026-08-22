@@ -106,8 +106,17 @@ const BREAKAGES = [
   },
   {
     id: 'SW_APP_VERSION',
-    what: 'APP_VERSION を上げ忘れる',
-    apply: (dir) => patch(join(dir, 'package.json'), (s) => s.replace(/"version": "[^"]+"/, '"version": "9.9.9"')),
+    // 版は配信物の中身から作るようになったので、「上げ忘れる」という壊れ方は
+    // もう起こせない。いまの壊れ方は「手書きに戻す」こと
+    what: 'APP_VERSION を手書きに戻す',
+    apply: (dir) => patch(join(dir, 'src/sw.js'),
+      (s) => s.replace("const APP_VERSION = '__APP_VERSION__';", "const APP_VERSION = 'v1.7.1';")),
+  },
+  {
+    id: 'STUDY_APP_VERSION',
+    what: '学習記録に刻む版を package.json とずらす',
+    apply: (dir) => patch(join(dir, 'src/studySession.js'),
+      (s) => s.replace(/APP_VERSION = '[^']+'/, "APP_VERSION = '0.0.1'")),
   },
   {
     id: 'MANIFEST_PATH',
