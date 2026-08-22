@@ -227,7 +227,8 @@ Esc で閉じ、元のボタンにフォーカスが戻る ✅（「設定をひ
 | E8 | **初回訪問で勝手にリロードしない** | ✅ | 画面遷移 **1回** |
 | E9 | **Service Worker が実際に登録されている** | ✅ | `getRegistration()` で `activated` |
 | E10 | offline.html（外部資産・JS に頼らない） | ✅ | 実測で表示を確認 |
-| E11 | APP_VERSION を今回のリリース値に更新した | ✅ | `v1.5.0`（`package.json` と一致。食い違いは品質ゲートが見る） |
+| E11 | SW の版が配信物の中身から自動で作られる | ✅ | `tools/build-sw.mjs` が `dist/sw.js` に刻む。手書きに戻すと `SW_APP_VERSION` が止める（2026-08-22 に自動化。それまでは手書きで、上げ忘れると直した画面が端末に届かなかった） |
+| E12 | 学習記録に刻む版が `package.json` と揃っている | ✅ | `STUDY_APP_VERSION` が見る。2026-08-22 まで見ておらず、`src/studySession.js` は 1.6.0 のまま `package.json` は 1.7.1 だった |
 | E12 | maskable のセーフゾーン外の中身 0.2% 以下 | ✅ | 0.027%（第1回の実測値。アイコンは今回変更していない） |
 | E13 | iOS の「ホーム画面に追加」手順を MANUAL に記載 | ✅ | MANUAL.md §4 |
 

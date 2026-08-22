@@ -204,10 +204,20 @@ npm run check -- --self-test   # 検査そのものが動いているかを確�
 ### リリース手順
 
 1. `src/**` を直す
-2. **版を上げる。3か所そろえること**
+2. **版を上げる。手で上げるのは2か所**
    *   `package.json` の `version`
-   *   `src/sw.js` の `APP_VERSION`（キャッシュ名に入る。食い違うと `npm run check` が止める）
-   *   `src/studySession.js` の `APP_VERSION`（学習ログの `appVersion` に入る。ここは品質ゲートが見ないので、手で確認すること）
+   *   `src/studySession.js` の `APP_VERSION`（学習ログの `appVersion` に入る。
+       `npm run check` の `STUDY_APP_VERSION` が `package.json` との食い違いを止める）
+
+   `src/sw.js` の `APP_VERSION` は **手で触らない。** `npm run build` のあと
+   `tools/build-sw.mjs` が「配信物の中身のハッシュ」に書き換える。
+   手書きに戻すと `npm run check` が止める。
+
+   > 以前は3か所を手で揃える決まりだったが、`src/sw.js` の版は
+   > 2026-08-21 に12リポジトリで同時に上げ忘れる事故を起こした。
+   > 上げ忘れると古いシェルのキャッシュが掃除されず、直した画面が
+   > 児童の端末に一度も届かないまま「直したはずなのに直らない」が続く。
+   > `src/studySession.js` のほうも実際に 1.6.0 のまま取り残されていた。
 3. `npm run build && npm run check`
 4. `main` へマージすると `.github/workflows/deploy.yml` が GitHub Pages へ公開する
 
