@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "vite build && node tools/build-sw.mjs",
     "preview": "vite preview",
-    "check": "node scripts/check-project.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "check": "node tools/check-secrets.mjs && node scripts/check-project.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check:secrets": "node tools/check-secrets.mjs"
   },
   "dependencies": {
     "@tensorflow/tfjs": "^3.21.0",
