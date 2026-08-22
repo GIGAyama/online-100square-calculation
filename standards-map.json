@@ -22,6 +22,10 @@
     {
       "canonical": "sw/build-sw-vite.mjs",
       "local": "tools/build-sw.mjs"
+    },
+    {
+      "canonical": "lib/check-secrets.mjs",
+      "local": "tools/check-secrets.mjs"
     }
   ],
   "unmanaged": [
