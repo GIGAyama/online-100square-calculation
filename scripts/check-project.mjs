@@ -13,9 +13,9 @@
  * リポジトリ共通の品質ゲート（正本 scripts/lib/project-quality.mjs）が配られたら、
  * このファイルは両者を合成するだけになり、正本は丸ごと差し替えで受け取れる。
  */
-import { readFileSync, existsSync, mkdtempSync, cpSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, cpSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -23,17 +23,24 @@ const cfg = JSON.parse(readFileSync(join(ROOT, 'quality.config.json'), 'utf8'));
 
 const { runGigaChecks } = await import('./lib/giga-v5-checks.mjs');
 
-/** 正本があれば合成する。無ければ Part I の検査だけで走る */
+/**
+ * かつてここに、共通の正本 scripts/lib/project-quality.mjs を「あれば合成、
+ * 無ければ Part I の検査だけ」で読む枝があった。外した理由（2026-08-22 に実測）:
+ *
+ *   ・その正本は一度も取り込まれず、**何の知らせも出さないまま**素通り
+ *     していた。含まれていた秘密の直書きの検査も働かず、src/ と public/ に
+ *     Google API キーと同じ形の文字列を置いても緑になっていた。
+ *   ・しかも取り込めば動く、というものでもなかった。この枝は
+ *     mod.runProjectQuality を探すが、艦隊にある8本のコピーはどれも
+ *     その名前を export していない（6本が runQualityChecks、1本が run）。
+ *     実際に置いて走らせても、出力は1文字も変わらなかった。
+ *
+ * 秘密の直書きは tools/check-secrets.mjs が見る（正本 GIGAyama.github.io の
+ * standards/lib/）。あちらは丸ごと1ファイルで完結し、無ければコマンドごと
+ * 失敗するので、「取り込み忘れたまま緑」にはならない。
+ */
 async function runAll(root) {
-  const findings = runGigaChecks(root, cfg);
-  const canon = join(ROOT, 'scripts/lib/project-quality.mjs');
-  if (existsSync(canon)) {
-    const mod = await import(pathToFileURL(canon).href);
-    if (typeof mod.runProjectQuality === 'function') {
-      findings.push(...(await mod.runProjectQuality(root, cfg)));
-    }
-  }
-  return findings;
+  return runGigaChecks(root, cfg);
 }
 
 // ---------------------------------------------------------------------------
