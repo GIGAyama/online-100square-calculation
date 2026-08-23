@@ -29,7 +29,7 @@ jobs:
       # 「0件でした」だけでは検査が動いているか分からないので、
       # わざと壊して反応することも毎回確かめる（§P4）
       - name: 品質ゲートの自己テスト
-        run: npm run check -- --self-test
+        run: npm run check:self
       # 学習ログの受け渡し口（records-export）が壊れていないか
       - name: 学習ログのテスト
         run: npm test
