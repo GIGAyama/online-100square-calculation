@@ -1,6 +1,19 @@
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+
+// 入口の HTML。ここに書いたものだけが dist に出る。
+// ⚠️ privacy.html / terms.html を外さないこと。Vite は index.html しか
+//    自動では拾わないため、外すと dist から消え、配信先（GitHub Pages）で
+//    404 になる。入口ページからはこの2枚へ直接リンクしている（§2-14）。
+const pages = ['index.html', 'privacy.html', 'terms.html']
+const input = Object.fromEntries(
+  pages.map((page) => [
+    page.replace(/\.html$/, ''),
+    fileURLToPath(new URL(page, import.meta.url)),
+  ]),
+)
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -64,6 +77,7 @@ export default defineConfig({
   ],
   build: {
     rollupOptions: {
+      input,
       output: {
         // TensorFlow.js を名前の決まった別チャンクに切り出す。
         // 名前が決まっていないと、上の globIgnores で先読みから外せない
