@@ -1,8 +1,35 @@
 {
-  "standard": "GIGA Standard v5",
+  "standard": {
+    "//": "正本 GIGAyama.github.io/standards/lib/giga-v5-checks.mjs に渡す設定。",
+    "repoName": "online-100square-calculation",
+    "sw": "vite",
+    "swSource": "src/sw.js",
+    "swVersionConst": "APP_VERSION",
+    "//manifest": "manifest は vite-plugin-pwa が vite.config.js の宣言から作る。原文にはファイルが無いので、ビルド結果を見る（dist が無ければ BUILD_PRESENT が落ちる）",
+    "manifest": "dist/manifest.webmanifest",
+    "//siteRoot": "Vite 型なので public/ の中身が配信の直下に来る。ここを書かないと offline.html とアイコンを「ありません」と誤検知する",
+    "siteRoot": "public",
+    "jsDirs": [
+      "src"
+    ],
+    "cssDirs": [
+      "src"
+    ],
+    "htmlFiles": [
+      "index.html",
+      "public/offline.html"
+    ],
+    "imageDirs": [
+      "public"
+    ],
+    "//allowedRemoteScripts": "本文の書体に Google Fonts の Zen Maru Gothic を使っている。読めなくても src/index.css の代替に落ちるだけで、動きは変わらない。艦隊の先例（Shiritori_fighter・KAKE_Master・Reversi）と同じ書き方にそろえた（2026-08-23）",
+    "allowedRemoteScripts": [
+      "^https://fonts\\.googleapis\\.com(/|$)",
+      "^https://fonts\\.gstatic\\.com(/|$)"
+    ]
+  },
   "appId": "square100",
   "repository": "online-100square-calculation",
-
   "requiredFiles": [
     "LICENSE",
     ".gitignore",
@@ -13,10 +40,8 @@
     "public/offline.html",
     "public/install-hook.js"
   ],
-
   "//presentationMode": "一斉授業で電子黒板に映す使い方があるアプリか（§2-11）。個人の端末だけで使うアプリは false にしてよい",
   "presentationMode": true,
-
   "//forbiddenCdn": "ブラウザへ送られる実行コードの CDN 依存。1件でもあると、学校のフィルタリングで塞がれたときに画面が出ない",
   "forbiddenCdn": [
     "@babel/standalone",
@@ -25,7 +50,6 @@
     "cdn.jsdelivr.net",
     "cdnjs.cloudflare.com"
   ],
-
   "limits": {
     "faviconKB": 30,
     "iconKB": 60,

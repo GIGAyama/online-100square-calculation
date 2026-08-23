@@ -26,13 +26,13 @@
     {
       "canonical": "lib/check-secrets.mjs",
       "local": "tools/check-secrets.mjs"
+    },
+    {
+      "canonical": "lib/giga-v5-checks.mjs",
+      "local": "scripts/lib/giga-v5-checks.mjs"
     }
   ],
   "unmanaged": [
-    {
-      "local": "scripts/lib/giga-v5-checks.mjs",
-      "reason": "424行のフォーク。検査IDの体系と quality.config.json の書式が正本と違うため、コピーし直しでは移行できない。いちばん効く「版ずれの検出」は tools/build-sw.mjs の配備で先に解消した（standards/docs/gate-forks.md の段取り①）。段取り②（ゲート本体の移行）は未実施（2026-08-22）"
-    },
     {
       "local": "public/records-export.html",
       "reason": "アプリごとに題名・色・スクリプトの置き場を変えている。正本の単純なコピーではない（2026-08-22）"

@@ -167,7 +167,8 @@ GIGAスクール構想で導入された端末（ChromebookやiPadなど）で�
 ├── public/group1-shard1of1.bin   # AI手書き認識用の重みデータファイル
 ├── public/*.png                  # favicon / PWA アイコン（パレット PNG・6点で 110KB）
 ├── scripts/check-project.mjs     # 品質ゲート（npm run check）
-├── scripts/lib/giga-v5-checks.mjs# GIGA Standard v5 Part I の検査
+├── scripts/lib/giga-v5-checks.mjs# 共通の検査の【正本のコピー】。直すときは正本を直して配る
+├── scripts/lib/local-checks.mjs  # このリポジトリだけの検査（提示モード・紙・先読み量など）
 ├── quality.config.json           # 品質ゲートのしきい値
 ├── vite.config.js                # ビルド・PWA manifest・TensorFlow.js の切り出し
 ├── .github/workflows/ci.yml      # build → check → 自己テスト（pull_request と push）
