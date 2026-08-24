@@ -1545,6 +1545,9 @@ export default function App() {
 
       <footer className="no-print safe-bottom w-full bg-white border-t border-slate-200 pt-3 pb-2 text-center text-sm text-slate-500 font-bold shadow-sm mt-auto">
         © 2026 100マス計算 <a href="https://giga-school.com" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline">GIGA山</a>
+        {/* このアプリを先に見つけた人が、使い方を読みたくなったときに戻れる先。
+            上の GIGA山 はトップに行くので、そこからだと 38 本の中から探し直すことになる。 */}
+        <a href="https://giga-school.com/apps/online-100square-calculation/" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline ml-2">使い方を読む</a>
       </footer>
 
       {/* 🔄 あたらしい版のおしらせ（§3-3）
