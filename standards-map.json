@@ -37,5 +37,15 @@
       "local": "public/records-export.html",
       "reason": "アプリごとに題名・色・スクリプトの置き場を変えている。正本の単純なコピーではない（2026-08-22）"
     }
+  ],
+  "dirs": [
+    {
+      "canonical": "skills/devlog-article",
+      "local": ".claude/skills/devlog-article"
+    },
+    {
+      "canonical": "skills/note-article",
+      "local": ".claude/skills/note-article"
+    }
   ]
 }
