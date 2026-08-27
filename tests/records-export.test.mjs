@@ -5,7 +5,7 @@
 // 正しく通る例より、通ってはいけない例のほうを厚く並べてある。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isAllowedOrigin, parseRecords } from '../public/records-export.js';
+import { isAllowedOrigin, parseRecords } from '../js/records-export.js';
 
 test('giga-school.com とそのサブドメインには渡す', () => {
   for (const o of [
@@ -58,6 +58,6 @@ test('記録が読めないときは空の配列を返し、集計側を落と�
 });
 
 test('読める記録はそのまま返す', () => {
-  const records = [{ schema: 'study.v1', appId: 'square100', mode: 'quiz' }];
+  const records = [{ schema: 'study.v1', appId: '__APP_ID__', mode: 'quiz' }];
   assert.deepEqual(parseRecords(JSON.stringify(records)), records);
 });
