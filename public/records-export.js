@@ -21,7 +21,7 @@
  * ・渡す相手は giga-school.com とそのサブドメインだけに限る。
  */
 const STUDY_LOG_KEY = 'study.records.v1';
-const APP_ID = 'square100';
+const APP_ID = '__APP_ID__';
 
 // 受け渡しを許す相手。
 // ・^ と $ で全体を縛る。前方一致にすると giga-school.com.example.com が通る
