@@ -66,6 +66,26 @@ export const BASE = ASCII + KANA + FULLWIDTH + PUNCT;
  *    絵文字が復活する。text= に絵文字が混ざると、その 1 字のために
  *    余計な面を取りにいくことになる（2026-08-28 に実測して直した）。
  */
+/**
+ * コメントを落とす。**画面に出る字だけを収録するため。**
+ *
+ * このリポジトリ群のソースは日本語コメントが厚い。コメントの字まで収録すると、
+ * 画面に一度も出ない漢字がフォントに入る。MIRAI-Compass で実測したところ、
+ * 1263 字 → 421 字、埋めこんだ CSS は 589KB → 88KB になった（6.7 分の 1）。
+ * GAS は毎回ページごと送り直すので、この差はそのまま毎回の転送量になる。
+ *
+ * ⚠️ わざと控えめにしてある。行の途中から始まる // は落とさない。
+ *    `https://…` や正規表現リテラルの中の // まで拾うと、その行の後ろにある
+ *    **画面に出る文字列まで消える**。落としすぎるとフォントが当たらない字が
+ *    増えるが、豆腐にはならないので目で気づけない。だから安全側に倒す。
+ */
+export function stripComments(src) {
+  return String(src)
+    .replace(/<!--[\s\S]*?-->/g, "")     // HTML
+    .replace(/\/\*[\s\S]*?\*\//g, "")    // /* … */（CSS と JS の両方）
+    .replace(/^[ \t]*\/\/.*$/gm, "");    // 行の頭から始まる // だけ
+}
+
 export function buildCharset({ grades = [], extra = "", sources = "" } = {}) {
   return [...new Set([...(BASE + kanjiForGrades(grades) + extra + sources)])]
     .filter((c) => {
