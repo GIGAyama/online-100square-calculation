@@ -25,9 +25,10 @@
   --cell-max: 56px;
 
   /* --- フォント §2-7 ---
-     学校のフィルタリングで fonts.googleapis.com が塞がれても字が崩れないよう、
-     端末側の日本語フォントを必ず後ろに並べる。Web フォントは「見た目だけ」の
-     依存なので、届かなくてもアプリは動く */
+     書体は自分のところから配っている（fonts.css は生成物）。
+     収録していない字は unicode-range の働きでここへ落ちるので、
+     端末側の日本語フォントを必ず後ろに並べておく。書体が変わるだけで
+     □（豆腐）にはならない */
   --font-ui: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Yu Gothic UI",
     "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
   /* 児童が字形を学ぶ場面（計算式）は教科書体を最優先 */

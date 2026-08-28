@@ -70,7 +70,13 @@ export default defineConfig({
         //    先読みが1MBを超えると、校内 Wi-Fi で40人が同時に開いたときに
         //    初回表示が止まる（§6・§8）。手書きを実際に使った端末だけが
         //    sw.js の CacheFirst で取り込む。
-        globIgnores: ['**/node_modules/**/*', '**/assets/tfjs-*.js'],
+        // ⚠️ 自己ホストした書体（woff2）も先読みに入れない。TensorFlow.js と同じ理由。
+        //    このアプリの先読みは書体を入れる前で 960KB あり、上限まで 64KB しか無い。
+        //    束1 だけでも 2 ウェイトで約 230KB あるので、入れると 1191KB になって
+        //    上限を超える（実測）。書体は §2-7 のとおり「見た目だけ」の依存で、
+        //    届かなくても端末側の丸ゴシックへ落ちるだけ。下の cache-first が
+        //    初回に取ってきた時点でキャッシュするので、2 回目からはオフラインでも出る。
+        globIgnores: ['**/node_modules/**/*', '**/assets/tfjs-*.js', '**/assets/*.woff2'],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
     }),

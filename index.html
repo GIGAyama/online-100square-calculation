@@ -22,8 +22,8 @@
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'self';
     script-src 'self';
-    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-    font-src 'self' https://fonts.gstatic.com;
+    style-src 'self' 'unsafe-inline';
+    font-src 'self';
     img-src 'self' data: blob:;
     connect-src 'self';
     frame-src 'self' https://gamification.giga-school.com;
@@ -72,12 +72,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="100マス計算" />
 
-  <!-- Web フォントは「見た目だけ」の依存なので CDN のまま許す（§2-7）。
-       学校のフィルタリングで fonts.googleapis.com が塞がれても、
-       index.css の --font-ui が端末側の日本語フォントへ落ちるので字は崩れない。 -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap" rel="stylesheet" />
+  <!-- 書体は自分のところから配る（生成物。node tools/fonts/build-fonts.mjs で作り直す）。
+       ここに Google Fonts への link を戻さないこと。学校のフィルタが
+       塞ぐと書体が当たらず、塞ぎ方によっては画面そのものが出ない。 -->
+  <link rel="stylesheet" href="./fonts.css" />
 
   <title>100ます計算 | GIGA山</title>
 </head>
