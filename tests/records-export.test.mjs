@@ -5,7 +5,27 @@
 // 正しく通る例より、通ってはいけない例のほうを厚く並べてある。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isAllowedOrigin, parseRecords } from '../js/records-export.js';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+/* 受け渡し口の置き場はリポジトリによって違う（js/ と public/ の2通りある）。
+ *
+ * ⚠️ 以前はここに '../js/records-export.js' と書いてあった。
+ *    public/ に置いている 3 本（KANJI_Town・Qalc・online-100square-calculation）では
+ *    npm test が ERR_MODULE_NOT_FOUND で落ちる。にもかかわらず check-drift は緑だった。
+ *    対応表の normalize（records-export-import）が、この import 行を
+ *    プレースホルダーに潰してから比べていたためである。
+ *    「配布先ごとに直してよい」という顔をしていたが、distribute.mjs は
+ *    normalize を見ずに正本をそのまま上書きするので、配布先で直しても次の配布で消える。
+ *    ずらしてよい場所を作るのではなく、置き場を実行時に探して 1 枚で両方に効かせる。
+ */
+// './' は正本そのもの（standards/records/）。ポータルでも自分の正本を試せるようにする
+const CANDIDATES = ['../js/records-export.js', '../public/records-export.js', './records-export.js'];
+const found = CANDIDATES.find((rel) => existsSync(fileURLToPath(new URL(rel, import.meta.url))));
+if (!found) {
+  throw new Error(`records-export.js が見つかりません（探した場所: ${CANDIDATES.join(' / ')}）`);
+}
+const { isAllowedOrigin, parseRecords } = await import(found);
 
 test('giga-school.com とそのサブドメインには渡す', () => {
   for (const o of [
