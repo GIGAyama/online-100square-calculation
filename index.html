@@ -85,6 +85,12 @@
   <script type="module" src="/src/main.jsx"></script>
   <!-- 学習ログを記録ハブ（まなびクエスト）へ写す。読むだけで、このアプリの記録には触れない -->
   <script src="./records-hub-client.js" defer></script>
+
+  <!-- 利用規約・プライバシーへの行き先。中身は正本の部品
+       standards/web/giga-app-links.js（配布物 public/giga-app-links.js）が、
+       src/App.jsx のフッターに置いた <span data-giga-links> の中に出す。
+       data-links は置き場所の側に書いてある。 -->
+  <script src="./giga-app-links.js" defer></script>
 </body>
 
 </html>

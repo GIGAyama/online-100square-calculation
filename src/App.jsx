@@ -1543,11 +1543,27 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="no-print safe-bottom w-full bg-white border-t border-slate-200 pt-3 pb-2 text-center text-sm text-slate-500 font-bold shadow-sm mt-auto">
-        © 2026 100マス計算 <a href="https://giga-school.com" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline">GIGA山</a>
-        {/* このアプリを先に見つけた人が、使い方を読みたくなったときに戻れる先。
-            上の GIGA山 はトップに行くので、そこからだと 38 本の中から探し直すことになる。 */}
-        <a href="https://giga-school.com/apps/online-100square-calculation/" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline ml-2">使い方を読む</a>
+      {/* ⚠️ 1 行に収める。flex-nowrap と min-w-0 の 2 つが要る。nowrap だけだと、
+          クレジットの文字列が縮まずに列を押し広げて横スクロールになる。
+          狭い画面ではクレジットが … で切れる。ここが太ると、そのぶん
+          マスを解く場所が狭くなる。 */}
+      <footer className="no-print safe-bottom w-full flex flex-nowrap items-center justify-center gap-1 bg-white border-t border-slate-200 py-1 text-center text-sm text-slate-500 font-bold shadow-sm mt-auto">
+        <span className="min-w-0 truncate">© 2026 100マス計算 <a href="https://giga-school.com" target="_blank" rel="noopener noreferrer" className="tap-44 inline-block text-slate-600 hover:underline">GIGA山</a></span>
+        {/* ⚠️ 行き先のリンクを手で書かないこと。中身は正本の部品
+            standards/web/giga-app-links.js（配布物 public/giga-app-links.js）が
+            この中に出す。文言も並びも行き先も、あちらで決まっている。
+
+            ⚠️ ここにあった「使い方を読む」（紹介記事へのリンク）は外した。
+               紹介記事は「なぜ作ったか」を、まだ使っていない先生に向けて
+               書いたもので、いま画面の前で困っている人が求めるものではない。
+               艦隊のほかのアプリでも既に外れている。
+
+            ⚠️ <div> にしないこと。そこで改行が入ってフッターが 2 行になる。
+
+            ⚠️ data-links で「つかいかた」を外してある。このアプリにはまだ
+               docs/manual/ が無く、既定のまま出すと行き止まりのリンクになる。
+               マニュアルを書いたら、この属性ごと消すこと。 */}
+        <span data-giga-links data-links="terms,privacy" />
       </footer>
 
       {/* 🔄 あたらしい版のおしらせ（§3-3）
