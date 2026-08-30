@@ -6,6 +6,18 @@
  *
  * ビルド後に dist/sw.js の APP_VERSION と PRECACHE_URLS を実体で埋める。
  *
+ * 使い方
+ *   node tools/build-sw.mjs            版と先読み一覧を書きこむ（npm run build から呼ぶ）
+ *   node tools/build-sw.mjs --check    書きこまずに、合っているかだけ見る（CI・レビュー用）
+ *
+ * どちらも**何度走らせても同じ**。すでに合っていれば「最新です」と言って
+ * 0 で終わる。2026-08-30 まではそうではなく、2 回目は必ず
+ * 「目印を書き換えられませんでした」で落ちていた。中身は合っているのに
+ * 「壊れている」と読める文言だったので、追いかけた人が public/sw.js を
+ * 直しに行くことになる。--check も受けつけていなかった（黙って無視して
+ * 書きこむので、レビューのつもりで走らせると作業ツリーが変わる）のに、
+ * SessionStart のフックと共通ルールの表はその形を案内していた。
+ *
  * なぜ手で書かないか
  *   - Vite の出力するファイル名にはハッシュが付く（index-ti_VyL6O.js）。
  *     手で並べた一覧は次のビルドで必ず古くなり、
@@ -59,8 +71,32 @@ const config = existsSync('sw-build.config.json')
   ? { ...DEFAULTS, ...JSON.parse(readFileSync('sw-build.config.json', 'utf8')) }
   : DEFAULTS;
 
+/* 書きこまずに見るだけ。CI と、コミット前の確かめに使う。 */
+const check = process.argv.includes('--check');
+
 const DIST = config.distDir;
 const SW = join(DIST, 'sw.js');
+
+/** 版がずれているときの言い分。両方のモードで同じ形にする。 */
+const stale = (now, want) => {
+  console.error(`[build-sw] ❌ ${SW} の APP_VERSION が中身と合っていません（いま ${now} / あるべき ${want}）。`);
+  console.error('           `npm run build` を実行してからコミットしてください。');
+  console.error('           ここがずれたままだと、直した画面が端末に届きません。');
+  process.exit(1);
+};
+
+/* dist/ が無いまま呼ばれると、これまでは readdirSync の ENOENT が
+   スタックごと出ていた。--check は「ビルドしてから」走らせるものなので、
+   そう読める形で落とす。CI の雛形に npm run build を書き忘れたときに、
+   いちばん最初にここへ来る。 */
+if (!existsSync(DIST)) {
+  console.error(`[build-sw] ❌ ${DIST}/ がありません。先に \`npm run build\` を実行してください。`);
+  process.exit(1);
+}
+if (!existsSync(SW)) {
+  console.error(`[build-sw] ❌ ${SW} がありません。public/sw.js が配信物に入っているか確かめてください。`);
+  process.exit(1);
+}
 
 const walk = (dir) => readdirSync(dir).flatMap((name) => {
   const p = join(dir, name);
@@ -94,12 +130,32 @@ if (config.precacheManagedByPlugin) {
   //        const APP_VERSION = '__APP_VERSION__';
   const swSrc = readFileSync(SW, 'utf8');
   const hits = swSrc.split('__APP_VERSION__').length - 1;
+
+  // 目印が残っていないときは、2 通りある。
+  //   (a) もう刻んである（同じビルドに対して2回目を走らせた／--check で見に来た）
+  //   (b) 目印を消してしまった（手書きの "v1.7.1" に戻した、など）
+  // (b) は据え置きの版で配ることになるので落とさなければならないが、
+  // (a) まで落とすと「合っているのに壊れていると言われる」ことになる。
+  // 見分けは版の形でつく。刻んだ版は 'v' ＋ 16進 12 桁で、手で書いた版は
+  // まずこの形にならない。
+  if (hits === 0) {
+    if (swSrc.includes(v)) {
+      console.log(`[build-sw] SW の版は最新です（${v} / ${hashed.length} ファイルの中身から）`);
+      process.exit(0);
+    }
+    if (/["']v[0-9a-f]{12}["']/.test(swSrc)) stale('刻み済みの別の版', v);
+    /* どちらでもなければ (b)。下の「0 個」で落とす */
+  }
+
   if (hits !== 1) {
-    console.error(`[build-sw] ❌ dist/sw.js の中に目印 __APP_VERSION__ が ${hits} 個ありました（1個であるべき）。`);
+    console.error(`[build-sw] ❌ ${SW} の中に目印 __APP_VERSION__ が ${hits} 個ありました（1個であるべき）。`);
     console.error("           sw.js に const APP_VERSION = '__APP_VERSION__'; と書いてください。");
     console.error('           見つからないまま配ると、版が据え置きのまま端末に届かなくなります。');
     process.exit(1);
   }
+
+  if (check) stale('未刻印', v);
+
   const stamped = swSrc.split('__APP_VERSION__').join(v);
   writeFileSync(SW, stamped);
   console.log(`[build-sw] APP_VERSION = ${v}（${hashed.length} ファイルの中身から）`);
@@ -154,26 +210,40 @@ for (const p of wanted.sort()) {
 }
 const version = 'v' + h.digest('hex').slice(0, 12);
 
-let src = readFileSync(SW, 'utf8');
-const before = src;
+const VERSION_LINE = /^const APP_VERSION = .*; \/\* __APP_VERSION__ \*\/$/m;
+const PRECACHE_LINE = /^const PRECACHE_URLS = .*; \/\* __PRECACHE_URLS__ \*\/$/m;
 
-src = src.replace(
-  /^const APP_VERSION = .*; \/\* __APP_VERSION__ \*\/$/m,
-  `const APP_VERSION = '${version}'; /* __APP_VERSION__ */`,
-);
-src = src.replace(
-  /^const PRECACHE_URLS = .*; \/\* __PRECACHE_URLS__ \*\/$/m,
-  `const PRECACHE_URLS = ${JSON.stringify(urls)}; /* __PRECACHE_URLS__ */`,
-);
+const src = readFileSync(SW, 'utf8');
 
-// 置換できていなければ、黙って「dev」のまま配ることになる。
+// 目印の行そのものが無ければ、黙って「dev」のまま配ることになる。
 // それは「更新が反映されない」と「圏外で真っ白」を同時に起こすので、必ず落とす。
-if (src === before || src.includes("APP_VERSION = 'dev'")) {
-  console.error('[build-sw] ❌ dist/sw.js の目印を書き換えられませんでした。');
-  console.error('           public/sw.js の __APP_VERSION__ / __PRECACHE_URLS__ の行を確かめてください。');
+// ⚠️ 「書き換えた結果が同じかどうか」で見てはいけない。すでに合っているときも
+//    同じになるので、正しい状態を壊れていると読み違える。
+const missing = [
+  VERSION_LINE.test(src) ? null : '__APP_VERSION__',
+  PRECACHE_LINE.test(src) ? null : '__PRECACHE_URLS__',
+].filter(Boolean);
+if (missing.length > 0) {
+  console.error(`[build-sw] ❌ ${SW} に目印の行が見つかりません（${missing.join(' / ')}）。`);
+  console.error('           public/sw.js を次の形にしてください:');
+  console.error("             const APP_VERSION = 'dev'; /* __APP_VERSION__ */");
+  console.error('             const PRECACHE_URLS = []; /* __PRECACHE_URLS__ */');
   process.exit(1);
 }
 
-writeFileSync(SW, src);
+// 置換文字列は関数で渡す。ファイル名に $& や $1 が入ると、
+// 文字列で渡したときだけ黙って別のものに化ける。
+const next = src
+  .replace(VERSION_LINE, () => `const APP_VERSION = '${version}'; /* __APP_VERSION__ */`)
+  .replace(PRECACHE_LINE, () => `const PRECACHE_URLS = ${JSON.stringify(urls)}; /* __PRECACHE_URLS__ */`);
+
+if (next === src) {
+  console.log(`[build-sw] SW の版は最新です（${version} / 先読み ${urls.length} 件）`);
+  process.exit(0);
+}
+
+if (check) stale((VERSION_LINE.exec(src)[0].match(/'([^']*)'/) || [, '不明'])[1], version);
+
+writeFileSync(SW, next);
 console.log(`[build-sw] APP_VERSION = ${version}`);
 console.log(`[build-sw] 先読み ${urls.length} 件 / ${(total / 1024).toFixed(1)} KB`);
