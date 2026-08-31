@@ -5,6 +5,9 @@ GIGAスクール構想で導入された端末（ChromebookやiPadなど）で�
 学校のネットワーク環境（フィルタリングや回線速度）に左右されず、ブラウザを開いた瞬間にサクサク動くことを最優先に開発されました。
 
 *   **公開先:** <https://online-100square-calculation.giga-school.com/>
+*   **子ども向けの使い方マニュアル:** [docs/manual/manual.md](docs/manual/manual.md)
+    （毎朝 <https://giga-school.com/apps/online-100square-calculation/manual/> に組み直され、
+    アプリのフッターの「つかいかた」がここへ行く）
 *   **先生向けの使い方:** [MANUAL.md](MANUAL.md)
 *   **実測値と、測っていないもの:** [AUDIT.md](AUDIT.md)
 
@@ -174,6 +177,7 @@ GIGAスクール構想で導入された端末（ChromebookやiPadなど）で�
 ├── .github/workflows/ci.yml      # build → check → 自己テスト（pull_request と push）
 ├── .github/workflows/deploy.yml  # main への push で GitHub Pages へ公開
 ├── docs/note/                    # 紹介記事の原稿と、実際に操作して撮った画面（19点）
+├── docs/manual/                  # 子ども向けの使い方マニュアルと、その画面写真（31点）
 ├── AUDIT.md                      # 実測値と、測っていないものの明示
 └── MANUAL.md                     # 先生向けの使い方
 ```
