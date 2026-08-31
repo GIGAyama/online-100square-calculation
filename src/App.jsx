@@ -1560,10 +1560,11 @@ export default function App() {
 
             ⚠️ <div> にしないこと。そこで改行が入ってフッターが 2 行になる。
 
-            ⚠️ data-links で「つかいかた」を外してある。このアプリにはまだ
-               docs/manual/ が無く、既定のまま出すと行き止まりのリンクになる。
-               マニュアルを書いたら、この属性ごと消すこと。 */}
-        <span data-giga-links data-links="terms,privacy" />
+            ⚠️ data-links を書かないこと。既定の並び（つかいかた・利用規約・
+               プライバシー）が出る。docs/manual/manual.md を書いた 2026-08-31 に
+               data-links="terms,privacy" を外した。それまでは docs/manual/ が
+               無く、「つかいかた」が行き止まりのリンクになっていた。 */}
+        <span data-giga-links />
       </footer>
 
       {/* 🔄 あたらしい版のおしらせ（§3-3）
