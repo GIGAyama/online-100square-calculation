@@ -242,7 +242,7 @@ if (next === src) {
   process.exit(0);
 }
 
-if (check) stale((VERSION_LINE.exec(src)[0].match(/'([^']*)'/) || [, '不明'])[1], version);
+if (check) stale((VERSION_LINE.exec(src)[0].match(/'([^']*)'/) || ['', '不明'])[1], version);
 
 writeFileSync(SW, next);
 console.log(`[build-sw] APP_VERSION = ${version}`);
