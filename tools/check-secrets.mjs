@@ -39,6 +39,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const DEFAULTS = {
   scan: ['src', 'public', 'js', 'css', 'index.html'],
@@ -161,4 +162,9 @@ function main() {
   console.log(`秘密の直書きはありません（${scanned.length} ファイルを見ました）`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+/* ⚠️ `file://${process.argv[1]}` を文字列で組み立てて比べないこと。Windows は
+   file:///C:/… とスラッシュの数が違い、空白や日本語を含むパスは Linux でも
+   %20 の有無で一致しない。一致しなければ main() は呼ばれず、何も見ないまま
+   exit 0 になる（2026-08-28 に giga-reviewer で起きた型。2026-09-02 に正本 3 本で再発）。
+   standards/lib/cli-entry.test.mjs が字面で見張っている。 */
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) main();
