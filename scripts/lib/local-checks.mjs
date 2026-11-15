@@ -198,7 +198,10 @@ export function runBuildChecks(root, config) {
     hasOffline ? '注入された先読みに入っています' : '注入された先読みに offline.html がありません（圏外では出せません）');
 
   // §8 総アセット（初回）。校内 Wi-Fi で40人が同時に開く前提。
-  const urls = [...swDist.matchAll(/"url":"([^"]+)"/g)].map((m) => m[1]);
+  // ⚠️ 同じファイルは 1 回だけ数える。注入される一覧には同じものが 2 回入ることがあり
+  //    （アイコン・offline.html など）、sw.js の側は重複を落としてから取りにいく。
+  //    2 回数えると、実際に取る量（877KB）より 120KB 多く見えていた（2026-11-15）。
+  const urls = [...new Set([...swDist.matchAll(/"url":"([^"]+)"/g)].map((m) => m[1]))];
   let total = 0;
   for (const u of urls) {
     const p = join(dist, u);
@@ -214,5 +217,81 @@ export function runBuildChecks(root, config) {
   add('PRECACHE_VENDOR', !vendor,
     vendor ? 'TensorFlow.js が先読みキャッシュに入っている。使う端末だけが実行時に取り込む形にする' : '');
 
+  // 入口の JS が「必ず読む」束を、実際にたどって確かめる。
+  //
+  // ⚠️ PRECACHE_VENDOR（先読みに入っていないこと）だけでは足りなかった。
+  //    2026-11-15 に実測すると、入口の束が tfjs の束を静的に import しており、
+  //    手書きをオフにした端末でも 1.4MB を必ず読んでいた。原因は vite.config.js の
+  //    manualChunks が、React も使う commonjs の補助関数（1 行）まで tfjs の束へ
+  //    入れていたこと。「初回 JS 300KB 以下」は入口の束（207KB）だけを見て
+  //    ✅ にしていたので、気づけなかった。
+  //    しかも tfjs は先読みに入れていないので、オンラインで 1 回だけ開いた端末は、
+  //    圏外で入口の束ごと読めずに画面が真っ白になる。
+  //    → index.html の module script と modulepreload、そこから静的 import で
+  //      つながる束をぜんぶ集め、(1) tfjs が混ざっていないこと、(2) 合計の量、を見る。
+  const indexHtml = read(join(dist, 'index.html'));
+  if (!indexHtml) {
+    add('ENTRY_NO_VENDOR', false, 'dist/index.html がありません');
+    return out;
+  }
+  const initial = collectInitialJs(dist, indexHtml);
+  const heavy = initial.files.filter((f) => /tfjs/.test(f));
+  add('ENTRY_NO_VENDOR', heavy.length === 0 && initial.files.length > 0,
+    initial.files.length === 0
+      ? 'dist/index.html から入口の JS が見つかりません（検査が何も見ていません）'
+      : heavy.length
+        ? `入口の JS が TensorFlow.js の束を必ず読む形になっている: ${heavy.join(', ')}。`
+          + 'vite.config.js の manualChunks を確かめる（共有の補助関数が tfjs の束に入っていないか）'
+        : `入口が必ず読む束は ${initial.files.length} 本`);
+
+  const initialKb = initial.bytes / 1024;
+  const limitKb = config.limits.initialJsKB;
+  const fits = typeof limitKb === 'number' && initialKb <= limitKb;
+  add('INITIAL_JS_BUDGET', fits,
+    typeof limitKb !== 'number'
+      ? 'quality.config.json の limits.initialJsKB がありません'
+      : `${initialKb.toFixed(0)}KB (上限 ${limitKb}KB)`
+        + (fits ? '' : '。マスが出る前に読む量が多すぎる。重い部品は import() で後から読む'));
+
   return out;
+}
+
+/**
+ * dist/index.html が「必ず読む」JS を集める。
+ * 入口の <script type="module"> と <link rel="modulepreload">、そこから
+ * 静的 import（import … from "./x.js" / import "./x.js" / export … from "./x.js"）で
+ * つながる束をたどる。import("./x.js") のような動的 import は、使うときまで
+ * 読まれないので数えない。
+ */
+function collectInitialJs(dist, indexHtml) {
+  const html = indexHtml.replace(/<!--[\s\S]*?-->/g, ' ');
+  const starts = [];
+  for (const m of html.matchAll(/<script\b[^>]*\btype=["']module["'][^>]*>/g)) {
+    const src = m[0].match(/\bsrc=["']([^"']+)["']/);
+    if (src) starts.push(src[1]);
+  }
+  for (const m of html.matchAll(/<link\b[^>]*\brel=["']modulepreload["'][^>]*>/g)) {
+    const href = m[0].match(/\bhref=["']([^"']+)["']/);
+    if (href) starts.push(href[1]);
+  }
+  const clean = (p) => p.replace(/^\.?\//, '').replace(/[?#].*$/, '');
+  const seen = new Set();
+  const queue = starts.map(clean);
+  let bytes = 0;
+  // 静的 import だけを拾う。import( … ) は直後がかっこなので当たらない
+  const STATIC_IMPORT = /(?:^|[;}\s])(?:import|export)\s*(?:[^"'()]*?\bfrom\s*)?["'](\.{1,2}\/[^"']+)["']/g;
+  while (queue.length) {
+    const rel = queue.shift();
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    const p = join(dist, rel);
+    if (!existsSync(p)) continue;      // 名前だけで判定できるよう、無いファイルも一覧には残す
+    bytes += statSync(p).size;
+    const code = readFileSync(p, 'utf8');
+    const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+    for (const m of code.matchAll(STATIC_IMPORT)) {
+      queue.push(join(dir, m[1]).replace(/\\/g, '/'));
+    }
+  }
+  return { files: [...seen], bytes };
 }

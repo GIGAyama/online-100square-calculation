@@ -218,6 +218,18 @@ const BREAKS = [
     apply: (s) => s.replace('"precacheKB": 1024', '"precacheKB": 1'),
   },
   {
+    id: 'ENTRY_NO_VENDOR',
+    file: 'dist/index.html',
+    // 入口が TensorFlow.js の束を必ず読む形（2026-11-15 に実際に起きていた）
+    apply: (s) => s.replace('</head>', '  <link rel="modulepreload" crossorigin href="./assets/tfjs-selftest.js">\n</head>'),
+  },
+  {
+    id: 'INITIAL_JS_BUDGET',
+    file: 'quality.config.json',
+    // 上限を 1KB にすれば、いまの入口の束で必ず越える
+    apply: (s) => s.replace('"initialJsKB": 300', '"initialJsKB": 1'),
+  },
+  {
     id: 'BUILD_PRESENT',
     file: 'dist',
     removeDir: true,

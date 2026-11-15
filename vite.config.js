@@ -88,6 +88,17 @@ export default defineConfig({
         // TensorFlow.js を名前の決まった別チャンクに切り出す。
         // 名前が決まっていないと、上の globIgnores で先読みから外せない
         manualChunks(id) {
+          // ⚠️ commonjs の補助関数（getDefaultExportFromCjs など）を tfjs の束に入れないこと。
+          //    Rollup は「束に入れたモジュールが使うもの」も同じ束へ連れていく。
+          //    この 1 行の補助関数は React も使うので、tfjs の束に入ったままだと
+          //    入口の束が tfjs の束を「静的に」import する形になり、手書きをオフにした
+          //    端末でも 1.4MB を必ず読むことになる。
+          //    実測（2026-11-15）: 初回に要る JS が 207KB のつもりで 1,569KB あり、
+          //    混んだ回線の想定でマスが出るまで 2.6 秒かかっていた（直すと 1.3 秒）。
+          //    しかも tfjs は先読みに入れていないので、オンラインで 1 回だけ開いた端末は
+          //    圏外で入口の束ごと読めず、画面が真っ白になっていた。
+          //    品質ゲートの ENTRY_NO_VENDOR がここを見はっている。
+          if (id.includes('commonjsHelpers')) return 'helpers';
           if (id.includes('node_modules/@tensorflow/')) return 'tfjs';
         },
       },

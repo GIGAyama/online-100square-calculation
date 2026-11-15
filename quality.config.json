@@ -57,6 +57,8 @@
     "fileLines": 5000,
     "fileKB": 400,
     "//precacheKB": "§8 総アセット（初回）1MB以下。校内 Wi-Fi で40人が同時に開く前提",
-    "precacheKB": 1024
+    "precacheKB": 1024,
+    "//initialJsKB": "マスが出る前に必ず読む JS の合計（入口の束と、そこから静的 import でつながる束）。手書きの TensorFlow.js は import() で後から読むので、ここには入らない",
+    "initialJsKB": 300
   }
 }
