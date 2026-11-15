@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2, EyeOff, Grid3x3, Check } from 'lucide-react';
+import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2, EyeOff, Grid3x3, Check, Hourglass } from 'lucide-react';
 import {
   APP_ID, MODE_ID, answerOf, inputMethodOf, allCellKeys,
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
@@ -7,7 +7,7 @@ import {
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
 import { isStandalone, keepLoadedFilesOffline } from './pwa';
 import { makeCols, pickRows, rowPool, maxCount } from './board';
-import { splitTime, splitRemaining, minuteReading } from './timeText';
+import { splitTime, splitRemaining, minuteReading, limitLabel } from './timeText';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
@@ -106,9 +106,18 @@ const useHighResTimer = () => {
 // 60 秒以上は「2分5.3秒」の形で出す。
 // 以前は何分かかっても「612.4秒」と出していた。100問に 10 分かかる子は、
 // 自分のタイムを読めなかった。分け方と「分」の読みは src/timeText.js にある。
-// whole を付けると、秒を整数で出す（のこり時間の表示に使う）
-const TimeText = ({ sec, whole = false, unitClassName = '' }) => {
+// whole を付けると、秒を整数で出す（のこり時間の表示に使う）。
+// compact も付けると、ちょうどの分のときに「0秒」を出さない（「2分」。制限時間の名前に使う）
+const TimeText = ({ sec, whole = false, compact = false, unitClassName = '' }) => {
   const { minutes, seconds } = whole ? splitRemaining(sec) : splitTime(sec);
+  if (compact && minutes > 0 && seconds === 0) {
+    return (
+      <span className="tabular-nums whitespace-nowrap">
+        {minutes}
+        <span className={unitClassName}><ruby>分<rp>(</rp><rt>{minuteReading(minutes)}</rt><rp>)</rp></ruby></span>
+      </span>
+    );
+  }
   return (
     <span className="tabular-nums whitespace-nowrap">
       {minutes > 0 && (
@@ -248,6 +257,9 @@ const useModalFocus = (ref, isOpen) => {
   }, [ref, isOpen]);
 };
 
+// ⏳ 選べる制限時間（秒）。0 は「なし」
+const TIME_LIMITS = [0, 60, 120, 180, 300, 600];
+
 // かけ算で「だん」を選んでいないときの、空の一覧（毎回おなじ配列を使い、描き直しを増やさない）
 const NO_DAN = [];
 
@@ -350,7 +362,9 @@ export default function App() {
       autoScore: true,
       inputPosition: 'right',
       // とりくんでいる間、タイムを出さない（時間が気になってあせる子のため）
-      hideTimer: false
+      hideTimer: false,
+      // 制限時間（秒）。0 なら制限なし。時間になったところで終わり、「○分で ○問」を残す
+      timeLimit: 0
     };
     try {
       const saved = JSON.parse(localStorage.getItem('giga_calc_settings_v4') || 'null');
@@ -375,6 +389,13 @@ export default function App() {
   const [danDraft, setDanDraft] = useState(NO_DAN);
   // だんが効くのは、かけ算のときだけ
   const activeDan = mode === 'かけ算' ? dan : NO_DAN;
+
+  // ⏳ いまの回（終わったあとは、終わった回）に効いている制限時間（秒）。0 なら制限なし。
+  //    スタートのときに設定から写す。とちゅうで設定を変えても、その回の約束は変えない
+  const [activeLimit, setActiveLimit] = useState(0);
+  const activeLimitRef = useRef(0);
+  // 時間になって終わったか（結果の出し方を変える）
+  const [timedOut, setTimedOut] = useState(false);
 
   const settingsBoxRef = useRef(null);
   const statsBoxRef = useRef(null);
@@ -443,10 +464,13 @@ export default function App() {
   const sessionRef = useRef(null);
 
   const [records, setRecords] = useState(() => {
+    // best       … ぜんぶ正解で終えたときのベストタイム（問題数ごと）
+    // bestSolved … 制限時間つきで、時間になるまでに正解できた数のさいこう（制限時間ごと）
+    // history    … 最近の 20 回（ぜんぶ正解で終えた回と、時間になって終わった回）
     const defaults = {
-      'たし算': { best: {}, history: [] },
-      '引き算': { best: {}, history: [] },
-      'かけ算': { best: {}, history: [] },
+      'たし算': { best: {}, history: [], bestSolved: {} },
+      '引き算': { best: {}, history: [], bestSolved: {} },
+      'かけ算': { best: {}, history: [], bestSolved: {} },
     };
     try {
       const parsed = JSON.parse(localStorage.getItem('giga_calc_records_v4') || 'null');
@@ -455,7 +479,8 @@ export default function App() {
           if (parsed[key]) {
             defaults[key] = {
               best: parsed[key].best || {},
-              history: Array.isArray(parsed[key].history) ? parsed[key].history : []
+              history: Array.isArray(parsed[key].history) ? parsed[key].history : [],
+              bestSolved: parsed[key].bestSolved || {}
             };
           }
         }
@@ -731,12 +756,14 @@ export default function App() {
   // status: 'completed' | 'aborted'
   // exactTimeSec は画面タイマーの経過秒。復帰後のレコードは
   // セッション開始時点からの分だけを elapsedMs とする
-  const saveSession = useCallback((status, exactTimeSec) => {
+  // timeUp: 制限時間になって終わったか（学習ログの ext.timeUp に残す）
+  const saveSession = useCallback((status, exactTimeSec, timeUp = false) => {
     const session = sessionRef.current;
     if (!session) return;
     sessionRef.current = null;
     finalizeStudySession(session, {
       status,
+      timeUp,
       elapsedMs: Math.max(0, exactTimeSec - session.startOffsetSec) * 1000,
       activeMs: activeTimer.stop(),
       inputs: inputsRef.current,
@@ -758,6 +785,7 @@ export default function App() {
     sessionRef.current = null;
     setGameState('idle');
     setResultScore(null);
+    setTimedOut(false);
     timer.reset();
     clearAllCanvas();
   }, [timer.reset, clearAllCanvas]);
@@ -802,6 +830,11 @@ export default function App() {
     setInputs({});
     inputsRef.current = {};
     setResultScore(null);
+    setTimedOut(false);
+    // この回の制限時間を決める（設定をとちゅうで変えても、この回は変えない）
+    const limitSec = settings.timeLimit || 0;
+    setActiveLimit(limitSec);
+    activeLimitRef.current = limitSec;
     setActiveCell({ r: 0, c: 0 });
     activeCellRef.current = { r: 0, c: 0 };
     runningRef.current = true;
@@ -816,6 +849,7 @@ export default function App() {
       autoScore: settings.autoScore,
       input: inputMethodOf(settings),
       dan: activeDan,
+      timeLimitSec: limitSec,
     });
     markCellTiming(sessionRef.current, '0_0');
     activeTimer.start();
@@ -952,6 +986,7 @@ export default function App() {
         autoScore: settingsRef.current.autoScore,
         input: inputMethodOf(settingsRef.current),
         dan: danRef.current,
+        timeLimitSec: activeLimitRef.current,
         scope: remaining,
         startOffsetSec: timer.peek(),
       });
@@ -1173,6 +1208,58 @@ export default function App() {
     }
     gradeNow();
   }, [gameState, settings.autoScore, countAnswers, count, gradeNow]);
+
+  // ⏳ 制限時間になったら、そこで終わる。
+  //    「2分で何問できるか」という取り組み方のため。全員が同じ時刻に終われるので、
+  //    一斉に始める授業で、早く終わった子が待つ・終わらない子が残る、が起きない。
+  const timeUp = useCallback(() => {
+    if (!runningRef.current) return;
+    runningRef.current = false;
+    setShowQuitConfirm(false);
+    setShowGradeConfirm(false);
+    const limitSec = activeLimitRef.current;
+    // ⚠️ 締める時刻は「制限時間ちょうど」にする。気づいた時刻（タブを隠していると
+    //    見はりが遅れる）で締めると、2分の約束が回によって 2分3秒になったりする
+    const exactTime = timer.stop(limitSec);
+    const { correct } = countAnswers(inputsRef.current);
+    setGameState('result');
+    setResultScore(correct);
+    setTimedOut(true);
+    if (settings.sound) playSound('finish');
+    saveSession('completed', exactTime, true);
+
+    // 「○分で ○問」を記録に残す。1問も正解していない回は残さない
+    if (correct === 0) return;
+    const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    // time も入れておく（古い版の画面は time があるものとして描くので、無いと落ちる）
+    const entry = { date: today, at: new Date().toISOString(), time: exactTime, count, limit: limitSec, solved: correct };
+    const picked = activeDan.length > 0;
+    if (picked) entry.dan = activeDan;
+    setRecords((prev) => {
+      const modeData = prev[mode];
+      const history = [entry, ...modeData.history].slice(0, 20);
+      const bestSolved = { ...(modeData.bestSolved || {}) };
+      // だんを選んだ回は「さいこう」に入れない（ベストタイムと同じ決まり）
+      if (!picked && correct > (bestSolved[limitSec] || 0)) bestSolved[limitSec] = correct;
+      return { ...prev, [mode]: { ...modeData, history, bestSolved } };
+    });
+  }, [mode, count, activeDan, settings.sound, timer.stop, countAnswers, saveSession]);
+
+  const timeUpRef = useRef(timeUp);
+  useEffect(() => { timeUpRef.current = timeUp; }, [timeUp]);
+  useEffect(() => {
+    if (gameState !== 'playing' || !activeLimit) return;
+    const watch = setInterval(() => {
+      if (timer.peek() >= activeLimit) timeUpRef.current();
+    }, 100);
+    return () => clearInterval(watch);
+  }, [gameState, activeLimit, timer.peek]);
+
+  // のこり時間（秒）。0 より小さくはしない
+  const remainingSeconds = useCallback(
+    () => Math.max(0, activeLimit - timer.peek()),
+    [activeLimit, timer.peek]
+  );
 
   const handleNumpadInput = useCallback((num) => {
     if (gameState !== 'playing' || !activeCellRef.current) return;
@@ -1513,10 +1600,23 @@ export default function App() {
           {(!settings.hideTimer || gameState === 'result') && (
             <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end" data-testid="clock">
               <Clock className="w-4 h-4 text-slate-500" aria-hidden="true" />
+              {/* 制限時間つきの回は、のこり時間を数える。はじめる前は、決めてある時間を出す */}
+              {((gameState === 'playing' && activeLimit > 0) || (gameState === 'idle' && settings.timeLimit > 0)) && (
+                <span className="text-xs text-slate-500 font-bold">のこり</span>
+              )}
               <span className={gameState === 'playing' ? 'text-blue-600' : ''}>
-                {gameState === 'playing'
-                  ? <RunningClock getSeconds={timer.peek} unitClassName={CLOCK_UNIT_CLASS} />
-                  : <TimeText sec={gameState === 'result' ? timer.finalTime : 0} unitClassName={CLOCK_UNIT_CLASS} />}
+                {gameState === 'playing' && activeLimit > 0 && (
+                  <RunningClock getSeconds={remainingSeconds} whole unitClassName={CLOCK_UNIT_CLASS} />
+                )}
+                {gameState === 'playing' && !activeLimit && (
+                  <RunningClock getSeconds={timer.peek} unitClassName={CLOCK_UNIT_CLASS} />
+                )}
+                {gameState === 'idle' && (settings.timeLimit > 0
+                  ? <TimeText sec={settings.timeLimit} whole compact unitClassName={CLOCK_UNIT_CLASS} />
+                  : <TimeText sec={0} unitClassName={CLOCK_UNIT_CLASS} />)}
+                {gameState === 'result' && (
+                  <TimeText sec={timer.finalTime} unitClassName={CLOCK_UNIT_CLASS} />
+                )}
               </span>
             </div>
           )}
@@ -1569,16 +1669,27 @@ export default function App() {
           {gameState === 'result' && (
             <div className="mb-3 bg-slate-100 border-2 border-slate-300 rounded-xl p-3 text-center" role="status" aria-live="polite">
               <h2 className="text-xl font-bold text-slate-700 flex justify-center items-center gap-2">
-                <Trophy className="w-6 h-6 text-slate-500" aria-hidden="true" />
-                {resultScore === count ? (
+                {timedOut
+                  ? <Hourglass className="w-6 h-6 text-slate-500" aria-hidden="true" />
+                  : <Trophy className="w-6 h-6 text-slate-500" aria-hidden="true" />}
+                {timedOut ? (
+                  <span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>です！よく<ruby>頑張<rp>(</rp><rt>がんば</rt><rp>)</rp></ruby>ったね！</span>
+                ) : resultScore === count ? (
                   <span>クリア！よく<ruby>頑張<rp>(</rp><rt>がんば</rt><rp>)</rp></ruby>ったね！</span>
                 ) : (
                   <span>おわり！<ruby>正解<rp>(</rp><rt>せいかい</rt><rp>)</rp></ruby> {resultScore} / {count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span>
                 )}
               </h2>
-              <p className="text-2xl font-bold text-slate-800 mt-1">
-                タイム: <span className="text-blue-600" data-testid="result-time"><TimeText sec={timer.finalTime} unitClassName="text-slate-800 mx-0.5" /></span>
-              </p>
+              {timedOut ? (
+                // 時間になって終わった回は、タイムではなく「○分で ○問」を出す
+                <p className="text-2xl font-bold text-slate-800 mt-1" data-testid="result-timeup">
+                  <TimeText sec={activeLimit} whole compact /> で <span className="text-blue-600 tabular-nums">{resultScore}</span><ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby> できました
+                </p>
+              ) : (
+                <p className="text-2xl font-bold text-slate-800 mt-1">
+                  タイム: <span className="text-blue-600" data-testid="result-time"><TimeText sec={timer.finalTime} unitClassName="text-slate-800 mx-0.5" /></span>
+                </p>
+              )}
             </div>
           )}
 
@@ -1899,6 +2010,28 @@ export default function App() {
                 <input type="checkbox" checked={settings.autoScore} onChange={(e) => setSettings({ ...settings, autoScore: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
               </label>
 
+              <label className="flex items-center justify-between gap-2 p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <Hourglass className="w-5 h-5 text-blue-600 shrink-0" />
+                  <div>
+                    <div className="font-bold text-slate-700"><span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>を<ruby>決<rp>(</rp><rt>き</rt><rp>)</rp></ruby>める</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>になったら<ruby>終<rp>(</rp><rt>お</rt><rp>)</rp></ruby>わります</span></div>
+                  </div>
+                </div>
+                {/* とりくんでいる間は変えられない（この回の約束は、スタートのときに決まる） */}
+                <select
+                  aria-label="制限時間"
+                  value={settings.timeLimit || 0}
+                  disabled={gameState === 'playing'}
+                  onChange={(e) => setSettings({ ...settings, timeLimit: parseInt(e.target.value, 10) || 0 })}
+                  className="tap-44 bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer"
+                >
+                  {TIME_LIMITS.map((limit) => (
+                    <option key={limit} value={limit}>{limit === 0 ? 'なし' : limitLabel(limit)}</option>
+                  ))}
+                </select>
+              </label>
+
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
                   <EyeOff className="w-5 h-5 text-blue-600" />
@@ -1978,6 +2111,21 @@ export default function App() {
                       ))}
                       {Object.keys(records[calcMode].best).length === 0 && <span className="text-sm text-slate-500"><span>まだ<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby>がありません</span></span>}
                     </div>
+
+                    {/* ⏳ 制限時間つきでとりくんだときの、いちばん多く正解できた数 */}
+                    {TIME_LIMITS.some((limit) => limit > 0 && records[calcMode].bestSolved?.[limit]) && (
+                      <>
+                        <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mt-3 mb-2"><Hourglass className="w-4 h-4" aria-hidden="true" /> <span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>を<ruby>決<rp>(</rp><rt>き</rt><rp>)</rp></ruby>めたときの さいこう</span></div>
+                        <div className="flex gap-4 flex-wrap">
+                          {TIME_LIMITS.filter((limit) => limit > 0 && records[calcMode].bestSolved?.[limit]).map((limit) => (
+                            <div key={`solved-${limit}`} className="bg-white px-2 py-1 rounded shadow-sm text-sm border border-slate-200">
+                              <span className="text-slate-500 text-xs mr-1"><TimeText sec={limit} whole compact />:</span>
+                              <span className="font-bold text-blue-600 tabular-nums">{records[calcMode].bestSolved[limit]}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   {/* 📈 学習ログ (study.v1) からの集計。
@@ -2031,8 +2179,18 @@ export default function App() {
                             {Array.isArray(hist.dan) && hist.dan.length > 0 && (
                               <span className="bg-blue-100 text-blue-900 px-2 py-0.5 rounded text-xs mr-1"><span>{hist.dan.join('・')}のだん</span></span>
                             )}
-                            <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
-                            <span className="font-bold text-slate-700"><TimeText sec={hist.time} /></span>
+                            {hist.limit > 0 ? (
+                              // 時間になって終わった回は「2分で 64問」
+                              <>
+                                <span className="bg-amber-100 text-amber-900 px-2 py-0.5 rounded text-xs mr-2"><span><TimeText sec={hist.limit} whole compact />で</span></span>
+                                <span className="font-bold text-slate-700 tabular-nums"><span>{hist.solved}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
+                                <span className="font-bold text-slate-700"><TimeText sec={hist.time} /></span>
+                              </>
+                            )}
                           </div>
                         </li>
                       ))}

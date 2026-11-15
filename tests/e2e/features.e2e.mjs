@@ -5,7 +5,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   startServer, launchBrowser, openApp, chooseAndStart, readBoard, waitForState,
-  solveFocused, plainText,
+  solveFocused, plainText, clickCell, typeDigits, answerAt,
 } from './helpers.mjs';
 
 let server;
@@ -139,6 +139,98 @@ test('かけ算で だんを えらぶと、えらんだ だんだけが出て�
     assert.match(await danButton.innerText(), /ぜんぶ/);
     await page.selectOption(countSelect, '100');
     assert.equal(new Set((await readBoard(page)).rows).size, 10);
+  } finally {
+    await context.close();
+  }
+});
+
+test('時間を決めると、時間になったところで終わり、「○分で ○問」が残る', async () => {
+  const { context, page } = await open({ settings: { timeLimit: 60 }, fakeClock: true });
+  try {
+    await page.waitForSelector('table.sq-table');
+    assert.equal(await plainText(page, '[data-testid="clock"]'), 'のこり1分', 'はじめる前は、決めてある時間を出す');
+
+    await chooseAndStart(page, { mode: 'かけ算', count: 100 });
+    for (let i = 0; i < 3; i++) await solveFocused(page);
+    await page.clock.fastForward(30_000);
+    await page.waitForFunction(() => /のこり\D*(29|30)/.test(document.querySelector('[data-testid="clock"]').textContent.replace(/びょう|ふん|ぷん/g, '')));
+    assert.match(await plainText(page, '[data-testid="clock"]'), /^のこり(29|30)秒$/, 'のこり時間を数える');
+
+    await page.clock.fastForward(31_000);
+    await waitForState(page, 'result');
+    assert.equal(await plainText(page, '[data-testid="result-timeup"]'), '1分 で 3問 できました');
+    const board = await readBoard(page);
+    assert.equal(board.cells.filter((cell) => cell.correct).length, 3);
+
+    const saved = await page.evaluate(() => ({
+      records: JSON.parse(localStorage.getItem('giga_calc_records_v4'))['かけ算'],
+      log: JSON.parse(localStorage.getItem('study.records.v1')).at(-1),
+    }));
+    assert.equal(saved.records.history[0].limit, 60);
+    assert.equal(saved.records.history[0].solved, 3);
+    assert.deepEqual(saved.records.bestSolved, { 60: 3 }, '「1分で さいこう 3問」が残る');
+    assert.deepEqual(saved.records.best, {}, 'ベストタイムには入れない（ぜんぶは解いていない）');
+
+    assert.equal(saved.log.status, 'completed', '自分でやめたのではないので、中断にはしない');
+    assert.equal(saved.log.ext.timeUp, true);
+    assert.equal(saved.log.ext.timeLimitMs, 60000);
+    assert.equal(saved.log.elapsedMs, 60000, '締める時刻は、制限時間ちょうど');
+    assert.deepEqual(
+      { count: saved.log.summary.count, attempted: saved.log.summary.attempted, correct: saved.log.summary.correct },
+      { count: 100, attempted: 3, correct: 3 },
+    );
+
+    await page.getByRole('button', { name: 'これまでの記録をみる' }).click();
+    const stats = await plainText(page, '[role="dialog"]');
+    assert.match(stats, /1分で ?3問/, '最近の記録に出る');
+    assert.match(stats, /さいこう ?1分: ?3問/, 'さいこうの数が出る');
+    assert.doesNotMatch(stats, /とちゅうでやめた/, '中断の回数には数えない');
+  } finally {
+    await context.close();
+  }
+});
+
+test('時間を決めていても、時間内に全部解ければ、いつもどおりクリアになる', async () => {
+  const { context, page } = await open({ settings: { timeLimit: 60 }, fakeClock: true });
+  try {
+    await chooseAndStart(page, { mode: 'たし算', count: 10 });
+    for (let i = 0; i < 10; i++) await solveFocused(page);
+    await waitForState(page, 'result');
+    assert.match(await plainText(page, '[data-testid="result-time"]'), /^\d+\.\d秒$/);
+    assert.equal(await page.locator('[data-testid="result-timeup"]').count(), 0);
+
+    // 終わったあとに時間が来ても、もう何も起きない
+    await page.clock.fastForward(120_000);
+    assert.equal(await page.locator('[data-testid="result-timeup"]').count(), 0);
+
+    const saved = await page.evaluate(() => ({
+      records: JSON.parse(localStorage.getItem('giga_calc_records_v4'))['たし算'],
+      log: JSON.parse(localStorage.getItem('study.records.v1')),
+    }));
+    assert.ok(saved.records.best[10] > 0, 'ベストタイムに入る');
+    assert.equal(saved.log.length, 1);
+    assert.equal(saved.log[0].ext.timeLimitMs, 60000);
+    assert.equal(saved.log[0].ext.timeUp, undefined);
+  } finally {
+    await context.close();
+  }
+});
+
+test('すぐ判定オフでも、時間になれば、入れたところまでで丸つけをして終わる', async () => {
+  const { context, page } = await open({ settings: { timeLimit: 60, autoScore: false, numpad: true }, fakeClock: true });
+  try {
+    await chooseAndStart(page, { mode: 'たし算', count: 20 });
+    const board = await readBoard(page);
+    // 2 マスは正しく、1 マスはまちがえて入れる
+    await clickCell(page, 0, 0); await typeDigits(page, answerAt(board, 0, 0));
+    await clickCell(page, 0, 1); await typeDigits(page, answerAt(board, 0, 1));
+    await clickCell(page, 0, 2); await typeDigits(page, answerAt(board, 0, 2) + 1);
+    await page.clock.fastForward(61_000);
+    await waitForState(page, 'result');
+    assert.equal(await plainText(page, '[data-testid="result-timeup"]'), '1分 で 2問 できました');
+    const after = await readBoard(page);
+    assert.equal(after.cells.filter((cell) => cell.correct).length, 2);
+    assert.equal(after.cells.filter((cell) => cell.wrong).length, 1);
   } finally {
     await context.close();
   }

@@ -84,11 +84,13 @@ export const allCellKeys = (rows, cols) => {
  * @param startOffsetSec このセッションが始まった時点の、画面タイマーの経過秒。
  *                      復帰後のレコードが「離れていた時間」を含まないようにする
  * @param dan           かけ算で選んだ「だん」（左に出す数）。選んでいなければ空
+ * @param timeLimitSec  この回の制限時間（秒）。制限なしなら 0
  */
-export function createStudySession({ mode, cells, rows, cols, autoScore, input, scope, startOffsetSec = 0, dan = [] }) {
+export function createStudySession({ mode, cells, rows, cols, autoScore, input, scope, startOffsetSec = 0, dan = [], timeLimitSec = 0 }) {
   const keys = scope || allCellKeys(rows, cols);
   return {
     dan: [...dan],
+    timeLimitSec,
     startedAt: new Date().toISOString(),
     mode,
     cells,
@@ -142,9 +144,10 @@ export function markCellTiming(session, key) {
  * @param activeMs    実際に操作していた時間（クランプ前）
  * @param inputs      各マスの最終入力値
  * @param prevBestSec 今回より前のベストタイム（秒）。無ければ undefined
+ * @param timeUp      制限時間になって終わったか
  * @returns 保存したレコードの id。保存しなかった場合は null
  */
-export function finalizeStudySession(session, { status, elapsedMs, activeMs, inputs, prevBestSec }) {
+export function finalizeStudySession(session, { status, elapsedMs, activeMs, inputs, prevBestSec, timeUp = false }) {
   if (!session) return null;
 
   // 最後に触っていたマスの時間を締める
@@ -242,6 +245,16 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
       // かけ算で「だん」を選んだときだけ付ける。unit.id は「かけ算 30マス」のまま変えないので、
       // 「ぜんぶのだんから出した 30マス」と分けて集計したいときは、ここを見る
       ...(pickedDan ? { dan: session.dan } : {}),
+      // 制限時間つきの回だけ付ける。
+      //   timeLimitMs … その回の制限時間
+      //   timeUp      … 時間になって終わった（全部は解いていない）
+      // ⚠️ 時間になって終わった回の status は 'completed' にしている。
+      //    自分でやめた（aborted）のではなく、決めた時間までやりきったため。
+      //    aborted にすると、記録画面の「とちゅうでやめた回数」に数えられてしまう。
+      //    全部を解いた回と分けて集計したいときは、ext.timeUp を見る
+      //    （summary.attempted が count より少ないことでも分かる）
+      ...(session.timeLimitSec > 0 ? { timeLimitMs: Math.round(session.timeLimitSec * 1000) } : {}),
+      ...(timeUp ? { timeUp: true } : {}),
       // items を持たない簡易集計でも、つまずいた式を辿れるようにする冗長データ
       wrongItems: [...session.wrongOnce]
         .map((key) => {
