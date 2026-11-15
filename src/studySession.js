@@ -13,7 +13,7 @@ import { saveStudyRecord } from './studyLog';
 //    src/sw.js の版はキャッシュ名用で、配信物の中身から自動で作られる別物。
 //    品質ゲートが見ているのは sw.js と package.json の2つだけなので、
 //    ここは上げ忘れても止まらない（README「リリース手順」に手順を書いてある）
-export const APP_VERSION = '1.7.1';
+export const APP_VERSION = '1.8.0';
 export const APP_ID = 'square100';
 
 // 内部で使っている日本語のモード名 → 集計用の英数小文字。
