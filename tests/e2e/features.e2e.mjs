@@ -72,3 +72,74 @@ test('設定の「タイマーを かくす」を入れると、その場でタ�
     await context.close();
   }
 });
+
+test('かけ算で だんを えらぶと、えらんだ だんだけが出て、ベストタイムとは分けて残る', async () => {
+  const { context, page } = await open();
+  try {
+    await page.waitForSelector('table.sq-table');
+    const danButton = page.locator('[data-testid="dan-button"]');
+    const countSelect = 'select[aria-label="問題数"]';
+    assert.equal(await danButton.count(), 0, 'たし算のときは、だんのボタンを出さない');
+
+    await page.selectOption('select[aria-label="計算の種類"]', 'かけ算');
+    await page.selectOption(countSelect, '100');
+    await danButton.click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: '7のだん' }).click();
+    await dialog.getByRole('button', { name: 'きめる' }).click();
+
+    assert.deepEqual((await readBoard(page)).rows, [7], '左には 7 だけが出る');
+    assert.equal(await page.inputValue(countSelect), '10', '問題数は、えらんだ だんの数に合う');
+    const disabledCounts = await page.evaluate((sel) => (
+      [...document.querySelectorAll(`${sel} option`)].filter((o) => o.disabled).map((o) => o.value)
+    ), countSelect);
+    assert.deepEqual(disabledCounts, ['20', '30', '40', '50', '60', '70', '80', '90', '100'], '同じ行を 2 つは出さない');
+
+    // だんを足す（7 はえらんだまま残っている）
+    await danButton.click();
+    await dialog.getByRole('button', { name: '6のだん' }).click();
+    await dialog.getByRole('button', { name: '8のだん' }).click();
+    await dialog.getByRole('button', { name: 'きめる' }).click();
+    assert.deepEqual([...(await readBoard(page)).rows].sort(), [6, 7, 8]);
+    assert.equal(await page.inputValue(countSelect), '30');
+    assert.match(await danButton.innerText(), /6・7・8のだん/);
+
+    await chooseAndStart(page);
+    for (let i = 0; i < 30; i++) await solveFocused(page);
+    await waitForState(page, 'result');
+
+    const saved = await page.evaluate(() => ({
+      records: JSON.parse(localStorage.getItem('giga_calc_records_v4'))['かけ算'],
+      log: JSON.parse(localStorage.getItem('study.records.v1')).at(-1),
+    }));
+    assert.deepEqual(saved.records.history[0].dan, [6, 7, 8], '最近の記録には、どのだんだったかが残る');
+    assert.deepEqual(saved.records.best, {}, 'だんをえらんだ回は、ベストタイムに入れない');
+    assert.deepEqual(saved.log.ext.dan, [6, 7, 8], '学習ログにも残る');
+    assert.equal(saved.log.unit.id, 'mul-30', '単元の ID は変えない');
+    assert.equal(saved.log.ext.bestMs, null);
+    assert.equal(saved.log.summary.firstTryCorrect, 30);
+
+    await page.getByRole('button', { name: 'これまでの記録をみる' }).click();
+    assert.match(await plainText(page, '[role="dialog"]'), /6・7・8のだん/);
+    await page.keyboard.press('Escape');
+
+    // ほかの計算に変えると、だんは効かない。かけ算へ戻すと、えらんだだんに合わせ直す
+    await page.selectOption('select[aria-label="計算の種類"]', 'たし算');
+    assert.equal(await danButton.count(), 0);
+    await page.selectOption(countSelect, '100');
+    assert.equal((await readBoard(page)).rows.length, 10);
+    await page.selectOption('select[aria-label="計算の種類"]', 'かけ算');
+    assert.equal(await page.inputValue(countSelect), '30', '100問のままにはしない');
+    assert.deepEqual([...(await readBoard(page)).rows].sort(), [6, 7, 8]);
+
+    // 「ぜんぶ はずす」で、もとの出し方にもどる
+    await danButton.click();
+    await dialog.getByRole('button', { name: 'ぜんぶ はずす' }).click();
+    await dialog.getByRole('button', { name: 'きめる' }).click();
+    assert.match(await danButton.innerText(), /ぜんぶ/);
+    await page.selectOption(countSelect, '100');
+    assert.equal(new Set((await readBoard(page)).rows).size, 10);
+  } finally {
+    await context.close();
+  }
+});

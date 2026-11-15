@@ -38,7 +38,25 @@ export const makeCols = (random = Math.random) => shuffle(range(0, 10), random);
  *
  * @param mode      'たし算' | '引き算' | 'かけ算'
  * @param rowsCount 行数（問題数 ÷ 10）
+ * @param only      出してよい数（かけ算で「だん」を選んだとき）。空なら全部から選ぶ
  */
-export function pickRows(mode, rowsCount, random = Math.random) {
-  return shuffle(rowPool(mode), random).slice(0, rowsCount);
+export function pickRows(mode, rowsCount, only = [], random = Math.random) {
+  return shuffle(allowedRows(mode, only), random).slice(0, rowsCount);
 }
+
+/**
+ * 左に出してよい数。only に入っている数だけに絞る。
+ * 何も選んでいない（または、その計算に無い数だけを選んでいる）ときは全部。
+ */
+export function allowedRows(mode, only = []) {
+  const pool = rowPool(mode);
+  const picked = pool.filter((n) => only.includes(n));
+  return picked.length ? picked : pool;
+}
+
+/**
+ * その選び方で出せる問題数の上限。
+ * 同じ数は 1 行だけなので、行数は「出してよい数」の個数まで
+ * （7 のだんだけなら 10 問、3 つ選べば 30 問まで）。
+ */
+export const maxCount = (mode, only = []) => allowedRows(mode, only).length * 10;

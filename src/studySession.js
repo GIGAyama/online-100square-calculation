@@ -83,10 +83,12 @@ export const allCellKeys = (rows, cols) => {
  *                      省略時は全マス。中断からの復帰時は残りのマスだけを渡す（§5.4）
  * @param startOffsetSec このセッションが始まった時点の、画面タイマーの経過秒。
  *                      復帰後のレコードが「離れていた時間」を含まないようにする
+ * @param dan           かけ算で選んだ「だん」（左に出す数）。選んでいなければ空
  */
-export function createStudySession({ mode, cells, rows, cols, autoScore, input, scope, startOffsetSec = 0 }) {
+export function createStudySession({ mode, cells, rows, cols, autoScore, input, scope, startOffsetSec = 0, dan = [] }) {
   const keys = scope || allCellKeys(rows, cols);
   return {
+    dan: [...dan],
     startedAt: new Date().toISOString(),
     mode,
     cells,
@@ -195,8 +197,11 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
 
   // ext.bestMs は今回の記録も含めた現時点のベストタイム。
   // 盤面の途中から始まったレコード（復帰後）のタイムはベストにならない
+  // だんを選んだ回のタイムも、ベストにならない（App.jsx の stopGame と同じ決まり）。
+  // かんたんなだんだけで出したタイムは、ぜんぶのだんから出したタイムと比べられない
   const wholeBoard = session.count === session.cells;
-  const isNewBest = status === 'completed' && wholeBoard && correct === session.count
+  const pickedDan = session.dan.length > 0;
+  const isNewBest = status === 'completed' && wholeBoard && !pickedDan && correct === session.count
     && (prevBestSec === undefined || elapsedMs / 1000 < prevBestSec);
   const bestSec = isNewBest ? elapsedMs / 1000 : prevBestSec;
 
@@ -234,6 +239,9 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
       input: session.input,
       cells: session.cells,
       bestMs: bestSec !== undefined ? Math.round(bestSec * 1000) : null,
+      // かけ算で「だん」を選んだときだけ付ける。unit.id は「かけ算 30マス」のまま変えないので、
+      // 「ぜんぶのだんから出した 30マス」と分けて集計したいときは、ここを見る
+      ...(pickedDan ? { dan: session.dan } : {}),
       // items を持たない簡易集計でも、つまずいた式を辿れるようにする冗長データ
       wrongItems: [...session.wrongOnce]
         .map((key) => {

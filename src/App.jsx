@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2, EyeOff } from 'lucide-react';
+import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2, EyeOff, Grid3x3, Check } from 'lucide-react';
 import {
   APP_ID, MODE_ID, answerOf, inputMethodOf, allCellKeys,
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
 } from './studySession';
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
 import { isStandalone, keepLoadedFilesOffline } from './pwa';
-import { makeCols, pickRows } from './board';
+import { makeCols, pickRows, rowPool, maxCount } from './board';
 import { splitTime, splitRemaining, minuteReading } from './timeText';
 
 // ==========================================
@@ -248,6 +248,17 @@ const useModalFocus = (ref, isOpen) => {
   }, [ref, isOpen]);
 };
 
+// かけ算で「だん」を選んでいないときの、空の一覧（毎回おなじ配列を使い、描き直しを増やさない）
+const NO_DAN = [];
+
+// 選んだ「だん」の書き方。例: [7] → 「7のだん」、[6, 7, 8] → 「6・7・8のだん」
+// 4 つ以上は長くなるので数だけにする（ヘッダーが折り返すと、マスを解く場所が狭くなる）
+const danLabel = (dan) => {
+  if (!dan || dan.length === 0) return 'だん: ぜんぶ';
+  if (dan.length <= 3) return `${dan.join('・')}のだん`;
+  return `だん: ${dan.length}こ`;
+};
+
 // ==========================================
 // 🧩 コンポーネント: 最適化された個別のセル
 // ==========================================
@@ -355,10 +366,22 @@ export default function App() {
   // 「丸つけ する」を、空いているマスが残ったまま押したときの確かめ
   const [showGradeConfirm, setShowGradeConfirm] = useState(false);
 
+  // 🔢 かけ算で、左に出す数（だん）を選んだもの。空なら、ぜんぶのだんから出す。
+  //    九九は 1 つのだんずつ習うので、「7のだんだけ」「6・7・8のだんだけ」を練習できるようにする。
+  //    計算の種類・問題数と同じ「いまの出題」の一部なので、端末には保存しない
+  const [dan, setDan] = useState(NO_DAN);
+  const [showDan, setShowDan] = useState(false);
+  // 選ぶ画面の中で、押している途中の選び方（「きめる」を押すまで出題は変えない）
+  const [danDraft, setDanDraft] = useState(NO_DAN);
+  // だんが効くのは、かけ算のときだけ
+  const activeDan = mode === 'かけ算' ? dan : NO_DAN;
+
   const settingsBoxRef = useRef(null);
   const statsBoxRef = useRef(null);
   const quitBoxRef = useRef(null);
   const gradeBoxRef = useRef(null);
+  const danBoxRef = useRef(null);
+  useModalFocus(danBoxRef, showDan);
   useModalFocus(settingsBoxRef, showSettings);
   useModalFocus(statsBoxRef, showStats);
   useModalFocus(quitBoxRef, showQuitConfirm);
@@ -452,11 +475,13 @@ export default function App() {
   // pagehide / pageshow は張り替えずに最新の状態を読む必要があるためミラーを持つ
   const tableDataRef = useRef(tableData);
   const modeRef = useRef(mode);
+  const danRef = useRef(activeDan);
   const countRef = useRef(count);
   const settingsRef = useRef(settings);
   useEffect(() => {
     tableDataRef.current = tableData;
     modeRef.current = mode;
+    danRef.current = activeDan;
     countRef.current = count;
     settingsRef.current = settings;
   });
@@ -472,7 +497,7 @@ export default function App() {
     window.addEventListener('mousedown', handleUserInteraction);
     window.addEventListener('keydown', handleUserInteraction);
 
-    generateTable(mode, count);
+    generateTable(mode, count, activeDan);
 
     return () => {
       window.removeEventListener('touchstart', handleUserInteraction);
@@ -517,18 +542,19 @@ export default function App() {
 
   // Esc キーでモーダルを閉じられるようにする
   useEffect(() => {
-    if (!showSettings && !showStats && !showQuitConfirm && !showGradeConfirm) return;
+    if (!showSettings && !showStats && !showQuitConfirm && !showGradeConfirm && !showDan) return;
     const handleEsc = (e) => {
       if (e.key === 'Escape') {
         setShowSettings(false);
         setShowStats(false);
         setShowQuitConfirm(false);
         setShowGradeConfirm(false);
+        setShowDan(false);
       }
     };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
-  }, [showSettings, showStats, showQuitConfirm, showGradeConfirm]);
+  }, [showSettings, showStats, showQuitConfirm, showGradeConfirm, showDan]);
 
   // 🖥️ 提示モード（§2-11）
   //
@@ -718,12 +744,13 @@ export default function App() {
     });
   }, [activeTimer]);
 
-  const generateTable = useCallback((currentMode, currentCount) => {
+  // currentDan: かけ算で選んだ「だん」。選んでいなければ空（ぜんぶのだんから出す）
+  const generateTable = useCallback((currentMode, currentCount, currentDan = NO_DAN) => {
     const rowsCount = currentCount / 10;
 
     // 上は 0〜9 を並べかえた 10 個。左は同じ数が重ならないように選ぶ（src/board.js）
     const newCols = makeCols();
-    const newRows = pickRows(currentMode, rowsCount);
+    const newRows = pickRows(currentMode, rowsCount, currentMode === 'かけ算' ? currentDan : NO_DAN);
 
     setTableData({ rows: newRows, cols: newCols });
     setInputs({});
@@ -736,14 +763,37 @@ export default function App() {
   }, [timer.reset, clearAllCanvas]);
 
   const handleModeChange = (e) => {
-    setMode(e.target.value);
-    generateTable(e.target.value, count);
+    const newMode = e.target.value;
+    // かけ算へ戻ったとき、選んであるだんの数より多い行は作れない（同じ行を 2 つ出さない）
+    const newCount = Math.min(count, maxCount(newMode, newMode === 'かけ算' ? dan : NO_DAN));
+    setMode(newMode);
+    if (newCount !== count) setCount(newCount);
+    generateTable(newMode, newCount, dan);
   };
 
   const handleCountChange = (e) => {
     const newCount = parseInt(e.target.value, 10);
     setCount(newCount);
-    generateTable(mode, newCount);
+    generateTable(mode, newCount, dan);
+  };
+
+  // だんを選ぶ画面をひらく・きめる
+  const openDan = () => {
+    setDanDraft(dan);
+    setShowDan(true);
+  };
+  const toggleDanDraft = (n) => {
+    setDanDraft((prev) => (prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n].sort((a, b) => a - b)));
+  };
+  const applyDan = () => {
+    const picked = danDraft.length ? danDraft : NO_DAN;
+    // 選んだだんが、ぜんぶ出る問題数にする（7のだんだけなら 10問、3つなら 30問）。
+    // 選ぶのをやめたときは、問題数はそのまま
+    const newCount = picked.length ? picked.length * 10 : count;
+    setDan(picked);
+    setShowDan(false);
+    if (newCount !== count) setCount(newCount);
+    generateTable(mode, newCount, picked);
   };
 
   const startGame = () => {
@@ -765,6 +815,7 @@ export default function App() {
       cols: tableData.cols,
       autoScore: settings.autoScore,
       input: inputMethodOf(settings),
+      dan: activeDan,
     });
     markCellTiming(sessionRef.current, '0_0');
     activeTimer.start();
@@ -789,10 +840,19 @@ export default function App() {
       const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
       // date は年を含まない表示用文字列。並べ替え・集計に使えるよう ISO 8601 も持たせる
       const newRecord = { date: today, at: new Date().toISOString(), time: exactTime, count: count };
+      // だんを選んだ回には、どのだんだったかを残す（最近の記録に「7のだん」と出す）
+      const picked = activeDan.length > 0;
+      if (picked) newRecord.dan = activeDan;
 
       setRecords(prev => {
         const modeData = prev[mode];
         const newHistory = [newRecord, ...modeData.history].slice(0, 20);
+        // ⚠️ だんを選んだ回は、ベストタイムに入れない。
+        //    ベストタイムは「計算の種類 × 問題数」で 1 つ。1 のだんだけで出したタイムが
+        //    そこへ入ると、ぜんぶのだんから出したときのタイムと比べられなくなる
+        if (picked) {
+          return { ...prev, [mode]: { ...modeData, history: newHistory } };
+        }
         let newBest = modeData.best[count];
         if (!newBest || exactTime < newBest) {
           newBest = exactTime;
@@ -803,7 +863,7 @@ export default function App() {
         };
       });
     }
-  }, [count, mode, settings.sound, timer.stop, saveSession]);
+  }, [count, mode, activeDan, settings.sound, timer.stop, saveSession]);
 
   // 途中でやめた記録も残す（study.v1 §5.4）。
   // 「難しすぎる」「量が多すぎる」という重要なサインなので、捨ててはならない。
@@ -891,6 +951,7 @@ export default function App() {
         cols,
         autoScore: settingsRef.current.autoScore,
         input: inputMethodOf(settingsRef.current),
+        dan: danRef.current,
         scope: remaining,
         startOffsetSec: timer.peek(),
       });
@@ -1433,10 +1494,18 @@ export default function App() {
             <option value="かけ算">かけ算</option>
           </select>
           <select aria-label="問題数" value={count} onChange={handleCountChange} disabled={gameState === 'playing'} className="tap-44 bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+            {/* だんを選んでいるときは、選んだ数より多い行を作れない（同じ行を 2 つ出さない） */}
             {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(n => (
-              <option key={n} value={n}>{n}問</option>
+              <option key={n} value={n} disabled={n > maxCount(mode, activeDan)}>{n}問</option>
             ))}
           </select>
+
+          {/* 🔢 だんを選ぶ（かけ算のときだけ出る） */}
+          {mode === 'かけ算' && (
+            <button onClick={openDan} disabled={gameState === 'playing'} data-testid="dan-button" aria-label={`れんしゅうするだんをえらぶ（いまは ${activeDan.length ? `${activeDan.join('・')}のだん` : 'ぜんぶ'}）`} className="tap-44 min-h-[44px] bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 hover:bg-slate-50 whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
+              <span>{danLabel(activeDan)}</span>
+            </button>
+          )}
 
           {/* ⏱ タイム。60 秒以上は「2分5.3秒」の形で出す。
               「タイマーを かくす」設定のときは、とりくんでいる間は出さない
@@ -1463,7 +1532,7 @@ export default function App() {
             </button>
           )}
           {gameState === 'result' && (
-            <button onClick={() => generateTable(mode, count)} className="tap-44 btn-press bg-blue-600 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-blue-700 text-sm whitespace-nowrap">
+            <button onClick={() => generateTable(mode, count, dan)} className="tap-44 btn-press bg-blue-600 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-blue-700 text-sm whitespace-nowrap">
               <RefreshCw className="w-4 h-4" aria-hidden="true" /> <span>もう<ruby>一度<rp>(</rp><rt>いちど</rt><rp>)</rp></ruby></span>
             </button>
           )}
@@ -1743,6 +1812,37 @@ export default function App() {
         </div>
       )}
 
+      {/* 🔢 だんを選ぶ画面（かけ算のときだけ開ける） */}
+      {showDan && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+          <div ref={danBoxRef} role="dialog" aria-modal="true" aria-labelledby="dan-title" tabIndex={-1} className="modal-shell bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col">
+            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
+              <h2 id="dan-title" className="font-bold text-slate-700 flex items-center gap-2"><Grid3x3 className="w-5 h-5 text-slate-600" aria-hidden="true" /> <span>だんを えらぶ</span></h2>
+              <button onClick={() => setShowDan(false)} className="tap-44 text-slate-500 hover:text-slate-700" aria-label="えらばずにとじる"><X className="w-6 h-6" aria-hidden="true" /></button>
+            </div>
+            <div className="scroll-area p-4 overflow-y-auto">
+              <p className="text-sm text-slate-600 mb-3 leading-relaxed"><span><ruby>練習<rp>(</rp><rt>れんしゅう</rt><rp>)</rp></ruby>する だんを おして えらびます。<ruby>何<rp>(</rp><rt>なに</rt><rp>)</rp></ruby>も えらばなければ、ぜんぶの だんから <ruby>出<rp>(</rp><rt>で</rt><rp>)</rp></ruby>ます。</span></p>
+              {/* 選んだものは、色だけでなく ✓ のしるしでも分かるようにする（§2-8） */}
+              <div className="grid grid-cols-2 gap-2">
+                {rowPool('かけ算').map((n) => {
+                  const on = danDraft.includes(n);
+                  return (
+                    <button key={n} onClick={() => toggleDanDraft(n)} aria-pressed={on} className={`btn-press min-h-[48px] rounded-xl border-2 font-bold text-lg flex items-center justify-center gap-1.5 ${on ? 'bg-blue-600 border-blue-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                      {on && <Check className="w-5 h-5" aria-hidden="true" />}
+                      <span>{n}のだん</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-4 pt-3 shrink-0 border-t border-slate-100 flex gap-2">
+              <button onClick={() => setDanDraft(NO_DAN)} disabled={danDraft.length === 0} className="flex-1 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-50 disabled:opacity-50"><span>ぜんぶ はずす</span></button>
+              <button onClick={applyDan} className="flex-1 btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span>きめる</span></button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ⚙️ 設定モーダル */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
@@ -1928,6 +2028,9 @@ export default function App() {
                         <li key={i} className="flex justify-between items-center text-sm bg-white border border-slate-100 shadow-sm px-3 py-2 rounded-lg">
                           <span className="text-slate-500">{hist.date}</span>
                           <div>
+                            {Array.isArray(hist.dan) && hist.dan.length > 0 && (
+                              <span className="bg-blue-100 text-blue-900 px-2 py-0.5 rounded text-xs mr-1"><span>{hist.dan.join('・')}のだん</span></span>
+                            )}
                             <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
                             <span className="font-bold text-slate-700"><TimeText sec={hist.time} /></span>
                           </div>
