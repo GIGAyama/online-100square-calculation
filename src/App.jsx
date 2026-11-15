@@ -5,7 +5,7 @@ import {
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
 } from './studySession';
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
-import { isStandalone } from './pwa';
+import { isStandalone, keepLoadedFilesOffline } from './pwa';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
@@ -458,12 +458,25 @@ export default function App() {
     };
   }, []);
 
+  // ⚠️ 書き込みは必ず try で受ける。読み込み（上の useState）は受けてあったが、
+  //    書き込みは受けておらず、保存領域に書けない端末では effect が例外を投げて
+  //    React が画面ごと外し、真っ白になっていた（実測 2026-11-15。容量がいっぱいの
+  //    とき、サイトデータの保存を止めてある端末のとき、の両方）。
+  //    書けなくても計算はできる。設定と記録が次に開いたときに残らないだけ。
   useEffect(() => {
-    localStorage.setItem('giga_calc_settings_v4', JSON.stringify(settings));
+    try {
+      localStorage.setItem('giga_calc_settings_v4', JSON.stringify(settings));
+    } catch (e) {
+      console.warn('設定を保存できませんでした:', e);
+    }
   }, [settings]);
 
   useEffect(() => {
-    localStorage.setItem('giga_calc_records_v4', JSON.stringify(records));
+    try {
+      localStorage.setItem('giga_calc_records_v4', JSON.stringify(records));
+    } catch (e) {
+      console.warn('記録を保存できませんでした:', e);
+    }
   }, [records]);
 
   // ⚠️ localStorage.clear() は使わないこと。`study.records.v1` は他アプリと
@@ -598,6 +611,8 @@ export default function App() {
       }
       const model = await tfjs.loadGraphModel(`${import.meta.env.BASE_URL}model.json`);
       setTfModel(model);
+      // はじめて開いた端末でも、次からは圏外で手書きが使えるようにする（src/pwa.js）
+      keepLoadedFilesOffline();
       setAiStatus(<span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>き<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>が<ruby>使<rp>(</rp><rt>つか</rt><rp>)</rp></ruby>えます</span>);
     } catch (e) {
       console.error("TF初期化エラー:", e);
@@ -1075,7 +1090,13 @@ export default function App() {
     // 線の太さは canvas の実解像度に対する割合で決める。
     // 固定値にすると、DPR 補正で解像度が変わった端末だけ線が細くなり、
     // 28×28 に縮めたときの字の濃さが変わって認識率が落ちる
-    ctx.lineWidth = Math.max(8, canvas.width * 0.1125);
+    //
+    // ⚠️ 割合の元は「幅と高さの短いほう」にすること。幅だけで決めると、欄が横長になる
+    //    画面（iPad の縦向き・提示モード・分割画面）で線だけが太くなり、字がつぶれる。
+    //    欄の高さは 160px で変わらないのに、幅は画面に合わせて 3 倍近くまで広がるため。
+    //    実測（2026-11-15）: 線は Chromebook の横画面で 14.5px、iPad の縦向きで 40.7px。
+    //    同じ筆跡 20 字のうち読めたのは 19 字と 9 字。短いほうで決めると 18 字に戻った。
+    ctx.lineWidth = Math.max(8, Math.min(canvas.width, canvas.height) * 0.1125);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = '#334155';
