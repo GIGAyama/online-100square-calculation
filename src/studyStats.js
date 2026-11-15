@@ -67,8 +67,8 @@ export function summarizeByMode(records, recentCount = 10) {
     if (Array.isArray(r.items)) {
       for (const it of r.items) {
         if (!it || it.firstTry !== false || !it.q) continue;
-        // 同じ q が1レコード内に複数現れうる（行の値は重複しうる）。
-        // 別々の試行として数える（§2.10）
+        // 古いレコード（2026-11-15 より前の版）には、同じ q が1レコード内に
+        // 複数ある（左の数が重なっていたため）。別々の試行として数える（§2.10）
         m.weak.set(it.q, (m.weak.get(it.q) || 0) + 1);
       }
     }

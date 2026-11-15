@@ -13,7 +13,7 @@ import { saveStudyRecord } from './studyLog';
 //    src/sw.js の版はキャッシュ名用で、配信物の中身から自動で作られる別物。
 //    品質ゲートが見ているのは sw.js と package.json の2つだけなので、
 //    ここは上げ忘れても止まらない（README「リリース手順」に手順を書いてある）
-export const APP_VERSION = '1.7.1';
+export const APP_VERSION = '1.8.0';
 export const APP_ID = 'square100';
 
 // 内部で使っている日本語のモード名 → 集計用の英数小文字。
@@ -41,7 +41,10 @@ export const answerOf = (mode, rowVal, colVal) => {
 
 // 設問ID。式そのものが安定した識別子として機能する形（20文字以内・日本語なし）
 // のため、ハッシュ化せずそのまま用いる（§2.10）。
-// 行の値は重複しうるので、同じ q が1レコード内に複数現れる点に注意。
+// ⚠️ 集計する側は、q をキーにした上書きをしないこと。
+//    いまの盤面は左の数が重ならないので、1レコードの中で q は重ならない。
+//    しかし 2026-11-15 より前の版は左の数を 1 行ずつ乱数で選んでいたので、
+//    それまでに残ったレコードには、同じ q が複数ある（別々の試行として数える）。
 export const questionId = (mode, rowVal, colVal) => `${rowVal}${MODE_OP[mode]}${colVal}`;
 
 // ext.input（§3.6）。同じ実力でも入力方法でタイムが大きく変わるため必須扱い
@@ -80,10 +83,14 @@ export const allCellKeys = (rows, cols) => {
  *                      省略時は全マス。中断からの復帰時は残りのマスだけを渡す（§5.4）
  * @param startOffsetSec このセッションが始まった時点の、画面タイマーの経過秒。
  *                      復帰後のレコードが「離れていた時間」を含まないようにする
+ * @param dan           かけ算で選んだ「だん」（左に出す数）。選んでいなければ空
+ * @param timeLimitSec  この回の制限時間（秒）。制限なしなら 0
  */
-export function createStudySession({ mode, cells, rows, cols, autoScore, input, scope, startOffsetSec = 0 }) {
+export function createStudySession({ mode, cells, rows, cols, autoScore, input, scope, startOffsetSec = 0, dan = [], timeLimitSec = 0 }) {
   const keys = scope || allCellKeys(rows, cols);
   return {
+    dan: [...dan],
+    timeLimitSec,
     startedAt: new Date().toISOString(),
     mode,
     cells,
@@ -137,9 +144,10 @@ export function markCellTiming(session, key) {
  * @param activeMs    実際に操作していた時間（クランプ前）
  * @param inputs      各マスの最終入力値
  * @param prevBestSec 今回より前のベストタイム（秒）。無ければ undefined
+ * @param timeUp      制限時間になって終わったか
  * @returns 保存したレコードの id。保存しなかった場合は null
  */
-export function finalizeStudySession(session, { status, elapsedMs, activeMs, inputs, prevBestSec }) {
+export function finalizeStudySession(session, { status, elapsedMs, activeMs, inputs, prevBestSec, timeUp = false }) {
   if (!session) return null;
 
   // 最後に触っていたマスの時間を締める
@@ -192,8 +200,11 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
 
   // ext.bestMs は今回の記録も含めた現時点のベストタイム。
   // 盤面の途中から始まったレコード（復帰後）のタイムはベストにならない
+  // だんを選んだ回のタイムも、ベストにならない（App.jsx の stopGame と同じ決まり）。
+  // かんたんなだんだけで出したタイムは、ぜんぶのだんから出したタイムと比べられない
   const wholeBoard = session.count === session.cells;
-  const isNewBest = status === 'completed' && wholeBoard && correct === session.count
+  const pickedDan = session.dan.length > 0;
+  const isNewBest = status === 'completed' && wholeBoard && !pickedDan && correct === session.count
     && (prevBestSec === undefined || elapsedMs / 1000 < prevBestSec);
   const bestSec = isNewBest ? elapsedMs / 1000 : prevBestSec;
 
@@ -231,6 +242,19 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
       input: session.input,
       cells: session.cells,
       bestMs: bestSec !== undefined ? Math.round(bestSec * 1000) : null,
+      // かけ算で「だん」を選んだときだけ付ける。unit.id は「かけ算 30マス」のまま変えないので、
+      // 「ぜんぶのだんから出した 30マス」と分けて集計したいときは、ここを見る
+      ...(pickedDan ? { dan: session.dan } : {}),
+      // 制限時間つきの回だけ付ける。
+      //   timeLimitMs … その回の制限時間
+      //   timeUp      … 時間になって終わった（全部は解いていない）
+      // ⚠️ 時間になって終わった回の status は 'completed' にしている。
+      //    自分でやめた（aborted）のではなく、決めた時間までやりきったため。
+      //    aborted にすると、記録画面の「とちゅうでやめた回数」に数えられてしまう。
+      //    全部を解いた回と分けて集計したいときは、ext.timeUp を見る
+      //    （summary.attempted が count より少ないことでも分かる）
+      ...(session.timeLimitSec > 0 ? { timeLimitMs: Math.round(session.timeLimitSec * 1000) } : {}),
+      ...(timeUp ? { timeUp: true } : {}),
       // items を持たない簡易集計でも、つまずいた式を辿れるようにする冗長データ
       wrongItems: [...session.wrongOnce]
         .map((key) => {

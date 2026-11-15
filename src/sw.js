@@ -26,9 +26,18 @@ const CACHE_RUNTIME = CACHE_PREFIX + 'runtime-' + APP_VERSION;
 // 先読みが1MBを超えると、校内 Wi-Fi で40人が同時に開いたときに
 // 初回表示が止まるため（§6・§8）。TensorFlow.js は下の CacheFirst で
 // 「実際に手書きを使った端末だけ」がキャッシュする。
-const PRECACHE_URLS = (self.__WB_MANIFEST || []).map((entry) =>
+//
+// ⚠️ 重複を必ず落とす。差し込まれる一覧には同じファイルが 2 回入ることがある
+//    （アイコンは manifest の分と glob の分、offline.html などは includeAssets の分と
+//    glob の分）。実測（2026-11-15）で 30 件中 10 件が重複しており、
+//    入れるたびに 120KB を 2 回ダウンロードしていた。
+const PRECACHE_URLS = [...new Set((self.__WB_MANIFEST || []).map((entry) =>
   typeof entry === 'string' ? entry : entry.url
-);
+))];
+
+// 画面遷移の返事を待つ上限。これを過ぎても返事が無く、手元に控えがあれば控えを先に出す。
+// ⚠️ 0 にしない（＝いつも控えから出す形にしない）。直した画面が届くのが 1 回おくれる。
+const NAV_TIMEOUT_MS = 3000;
 
 self.addEventListener('install', (e) => e.waitUntil((async () => {
   const cache = await caches.open(CACHE_STATIC);
@@ -61,15 +70,35 @@ self.addEventListener('fetch', (e) => {
   // 画面遷移は network-first。更新をすぐ届け、圏外なら手元の控えを出す
   if (req.mode === 'navigate') {
     e.respondWith((async () => {
+      // 手元の控え。まず「開こうとした画面そのもの」を探す。これを飛ばして
+      // index.html から返すと、圏外では利用規約を開いてもアプリが出る。
+      const fromCache = async () =>
+        (await caches.match(req)) || (await caches.match('./index.html'));
+
+      // ⚠️ 「つながっているのに返事が来ない」回線（混んだ校内 Wi-Fi・認証待ちのプロキシ）では
+      //    fetch がいつまでも終わらない。圏外ならすぐ失敗して控えが出るのに、
+      //    こちらは控えがあっても画面が出ない。
+      //    実測（2026-11-15）: 返事が 8 秒おくれる回線で 8.1 秒、返事が来ない回線では
+      //    40 秒待ってもマスが出なかった（圏外なら 0.1 秒）。
+      //    NAV_TIMEOUT_MS だけ待ち、それでも来なければ控えを出す。
+      const network = fetch(req);
+      network.catch(() => { });   // 控えを出したあとで失敗しても、未処理の失敗として残さない
+      let timer;
+      const slow = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), NAV_TIMEOUT_MS);
+      });
       try {
-        return await fetch(req);
+        const res = await Promise.race([network, slow]);
+        if (res) return res;
+        // 時間切れ。控えがあればそれを出し、無ければ待つしかない
+        return (await fromCache()) || (await network);
       } catch {
-        // 圏外。まず「開こうとした画面そのもの」を探す。これを飛ばして
-        // index.html から返すと、圏外では利用規約を開いてもアプリが出る。
-        return (await caches.match(req))
-          || (await caches.match('./index.html'))
+        // 圏外
+        return (await fromCache())
           || (await caches.match('./offline.html'))
           || Response.error();
+      } finally {
+        clearTimeout(timer);
       }
     })());
     return;
@@ -97,5 +126,31 @@ self.addEventListener('fetch', (e) => {
 });
 
 self.addEventListener('message', (e) => {
-  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
+  const data = e.data;
+  if (!data) return;
+  if (data.type === 'SKIP_WAITING') self.skipWaiting();
+
+  // はじめて開いたとき、画面はまだ Service Worker の管理下にない。
+  // その間に画面が取りにいったもの（手書きの TensorFlow.js・書体）は上の fetch を
+  // 通らないので、キャッシュに残らない。
+  // 実測（2026-11-15）: オンラインで 1 回開いただけの端末にはキャッシュに TensorFlow.js が無く、
+  // 2 回開いてはじめて入っていた。「一度使えば圏外でも手書きが使える」が成り立っていなかった。
+  // 画面から「もう取ったもの」の一覧（src/pwa.js の keepLoadedFilesOffline）をもらい、
+  // 足りない分だけ控える。直前に取ったばかりなので、ふつうは HTTP キャッシュから返る。
+  if (data.type === 'CACHE_URLS' && Array.isArray(data.urls)) {
+    e.waitUntil((async () => {
+      const cache = await caches.open(CACHE_RUNTIME);
+      for (const raw of data.urls.slice(0, 40)) {
+        try {
+          const url = new URL(raw, self.location.href);
+          if (url.origin !== self.location.origin) continue;   // 自分のところのものだけ
+          if (await caches.match(url.href)) continue;          // もう持っている
+          const res = await fetch(url.href);
+          if (res.ok && res.type === 'basic') await cache.put(url.href, res);
+        } catch {
+          // 取れなくてもよい。次に開いたときに fetch の側が控える
+        }
+      }
+    })());
+  }
 });

@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2 } from 'lucide-react';
+import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2, EyeOff, Grid3x3, Check, Hourglass } from 'lucide-react';
 import {
   APP_ID, MODE_ID, answerOf, inputMethodOf, allCellKeys,
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
 } from './studySession';
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
-import { isStandalone } from './pwa';
+import { isStandalone, keepLoadedFilesOffline } from './pwa';
+import { makeCols, pickRows, rowPool, maxCount } from './board';
+import { splitTime, splitRemaining, minuteReading, limitLabel } from './timeText';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
@@ -64,36 +66,17 @@ const playSound = (type) => {
   }
 };
 
-// 偏りのないシャッフル (Fisher–Yates)
-const shuffle = (array) => {
-  const arr = [...array];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-};
-
 // ==========================================
-// ⚡ カスタムフック: 高精度＆軽量タイマー
+// ⚡ カスタムフック: タイマー
 // ==========================================
+// 計るのは performance.now() の差だけ。画面に描くのは、下の RunningClock が受け持つ。
 const useHighResTimer = () => {
-  const displayRef = useRef(null);
   const startTimeRef = useRef(0);
-  const reqRef = useRef(null);
   const [finalTime, setFinalTime] = useState(0);
 
   const start = useCallback(() => {
     startTimeRef.current = performance.now();
     setFinalTime(0);
-    const update = () => {
-      const diff = (performance.now() - startTimeRef.current) / 1000;
-      if (displayRef.current) {
-        displayRef.current.textContent = diff.toFixed(1);
-      }
-      reqRef.current = requestAnimationFrame(update);
-    };
-    reqRef.current = requestAnimationFrame(update);
   }, []);
 
   // 経過時間を止めずに読む（中断時に「タブを離れた時刻」を控えるのに使う）
@@ -102,36 +85,79 @@ const useHighResTimer = () => {
   // atSeconds を渡すと、その時点で止めたものとして締める。
   // タブを離れたまま戻らなかった中断で、待っていた時間を含めないために使う
   const stop = useCallback((atSeconds) => {
-    if (reqRef.current) cancelAnimationFrame(reqRef.current);
     const final = atSeconds !== undefined
       ? atSeconds
       : (performance.now() - startTimeRef.current) / 1000;
     setFinalTime(final);
-    if (displayRef.current) {
-      displayRef.current.textContent = final.toFixed(1);
-    }
     return final;
   }, []);
 
-  const reset = useCallback(() => {
-    if (reqRef.current) cancelAnimationFrame(reqRef.current);
-    setFinalTime(0);
-    if (displayRef.current) {
-      displayRef.current.textContent = "0.0";
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (reqRef.current) cancelAnimationFrame(reqRef.current);
-    };
-  }, []);
+  const reset = useCallback(() => { setFinalTime(0); }, []);
 
   return useMemo(
-    () => ({ displayRef, start, stop, peek, reset, finalTime }),
+    () => ({ start, stop, peek, reset, finalTime }),
     [start, stop, peek, reset, finalTime]
   );
 };
+
+// ==========================================
+// 🕒 タイムの表示
+// ==========================================
+// 60 秒以上は「2分5.3秒」の形で出す。
+// 以前は何分かかっても「612.4秒」と出していた。100問に 10 分かかる子は、
+// 自分のタイムを読めなかった。分け方と「分」の読みは src/timeText.js にある。
+// whole を付けると、秒を整数で出す（のこり時間の表示に使う）。
+// compact も付けると、ちょうどの分のときに「0秒」を出さない（「2分」。制限時間の名前に使う）
+const TimeText = ({ sec, whole = false, compact = false, unitClassName = '' }) => {
+  const { minutes, seconds } = whole ? splitRemaining(sec) : splitTime(sec);
+  if (compact && minutes > 0 && seconds === 0) {
+    return (
+      <span className="tabular-nums whitespace-nowrap">
+        {minutes}
+        <span className={unitClassName}><ruby>分<rp>(</rp><rt>{minuteReading(minutes)}</rt><rp>)</rp></ruby></span>
+      </span>
+    );
+  }
+  return (
+    <span className="tabular-nums whitespace-nowrap">
+      {minutes > 0 && (
+        <>
+          {minutes}
+          <span className={unitClassName}><ruby>分<rp>(</rp><rt>{minuteReading(minutes)}</rt><rp>)</rp></ruby></span>
+        </>
+      )}
+      {whole ? seconds : seconds.toFixed(1)}
+      <span className={unitClassName}><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span>
+    </span>
+  );
+};
+
+// ヘッダーのタイムで、単位（分・秒）だけを小さく出すための指定
+const CLOCK_UNIT_CLASS = 'text-xs text-slate-500 ml-0.5';
+
+// 動いているあいだのタイムを描く小さな部品。
+// ⚠️ この数字を App の state にしないこと。App ごと 1 秒に 10 回描き直され、
+//    そのたびに 100 マスぶんの比較が走る。描き直すのは、この部品だけにする。
+const RunningClock = memo(({ getSeconds, whole = false, unitClassName }) => {
+  const [sec, setSec] = useState(() => getSeconds());
+  useEffect(() => {
+    let frame;
+    let shown = null;
+    const tick = () => {
+      const now = getSeconds();
+      // 表示が変わるときだけ描き直す（0.1 秒きざみ。のこり時間は 1 秒きざみ）
+      const key = whole ? Math.ceil(now) : Math.floor(now * 10);
+      if (key !== shown) {
+        shown = key;
+        setSec(now);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [getSeconds, whole]);
+  return <TimeText sec={sec} whole={whole} unitClassName={unitClassName} />;
+});
 
 // ==========================================
 // ⏱ カスタムフック: 実際に操作していた時間 (activeMs) の計測
@@ -231,6 +257,20 @@ const useModalFocus = (ref, isOpen) => {
   }, [ref, isOpen]);
 };
 
+// ⏳ 選べる制限時間（秒）。0 は「なし」
+const TIME_LIMITS = [0, 60, 120, 180, 300, 600];
+
+// かけ算で「だん」を選んでいないときの、空の一覧（毎回おなじ配列を使い、描き直しを増やさない）
+const NO_DAN = [];
+
+// 選んだ「だん」の書き方。例: [7] → 「7のだん」、[6, 7, 8] → 「6・7・8のだん」
+// 4 つ以上は長くなるので数だけにする（ヘッダーが折り返すと、マスを解く場所が狭くなる）
+const danLabel = (dan) => {
+  if (!dan || dan.length === 0) return 'だん: ぜんぶ';
+  if (dan.length <= 3) return `${dan.join('・')}のだん`;
+  return `だん: ${dan.length}こ`;
+};
+
 // ==========================================
 // 🧩 コンポーネント: 最適化された個別のセル
 // ==========================================
@@ -320,7 +360,11 @@ export default function App() {
       numpad: false,
       handwriting: true,
       autoScore: true,
-      inputPosition: 'right'
+      inputPosition: 'right',
+      // とりくんでいる間、タイムを出さない（時間が気になってあせる子のため）
+      hideTimer: false,
+      // 制限時間（秒）。0 なら制限なし。時間になったところで終わり、「○分で ○問」を残す
+      timeLimit: 0
     };
     try {
       const saved = JSON.parse(localStorage.getItem('giga_calc_settings_v4') || 'null');
@@ -333,13 +377,36 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  // 「丸つけ する」を、空いているマスが残ったまま押したときの確かめ
+  const [showGradeConfirm, setShowGradeConfirm] = useState(false);
+
+  // 🔢 かけ算で、左に出す数（だん）を選んだもの。空なら、ぜんぶのだんから出す。
+  //    九九は 1 つのだんずつ習うので、「7のだんだけ」「6・7・8のだんだけ」を練習できるようにする。
+  //    計算の種類・問題数と同じ「いまの出題」の一部なので、端末には保存しない
+  const [dan, setDan] = useState(NO_DAN);
+  const [showDan, setShowDan] = useState(false);
+  // 選ぶ画面の中で、押している途中の選び方（「きめる」を押すまで出題は変えない）
+  const [danDraft, setDanDraft] = useState(NO_DAN);
+  // だんが効くのは、かけ算のときだけ
+  const activeDan = mode === 'かけ算' ? dan : NO_DAN;
+
+  // ⏳ いまの回（終わったあとは、終わった回）に効いている制限時間（秒）。0 なら制限なし。
+  //    スタートのときに設定から写す。とちゅうで設定を変えても、その回の約束は変えない
+  const [activeLimit, setActiveLimit] = useState(0);
+  const activeLimitRef = useRef(0);
+  // 時間になって終わったか（結果の出し方を変える）
+  const [timedOut, setTimedOut] = useState(false);
 
   const settingsBoxRef = useRef(null);
   const statsBoxRef = useRef(null);
   const quitBoxRef = useRef(null);
+  const gradeBoxRef = useRef(null);
+  const danBoxRef = useRef(null);
+  useModalFocus(danBoxRef, showDan);
   useModalFocus(settingsBoxRef, showSettings);
   useModalFocus(statsBoxRef, showStats);
   useModalFocus(quitBoxRef, showQuitConfirm);
+  useModalFocus(gradeBoxRef, showGradeConfirm);
 
   // ホーム画面・デスクトップへの追加を案内できるか。
   // ⚠️ 案内できるときだけボタンを出す。出せないボタンを置いておくと
@@ -397,10 +464,13 @@ export default function App() {
   const sessionRef = useRef(null);
 
   const [records, setRecords] = useState(() => {
+    // best       … ぜんぶ正解で終えたときのベストタイム（問題数ごと）
+    // bestSolved … 制限時間つきで、時間になるまでに正解できた数のさいこう（制限時間ごと）
+    // history    … 最近の 20 回（ぜんぶ正解で終えた回と、時間になって終わった回）
     const defaults = {
-      'たし算': { best: {}, history: [] },
-      '引き算': { best: {}, history: [] },
-      'かけ算': { best: {}, history: [] },
+      'たし算': { best: {}, history: [], bestSolved: {} },
+      '引き算': { best: {}, history: [], bestSolved: {} },
+      'かけ算': { best: {}, history: [], bestSolved: {} },
     };
     try {
       const parsed = JSON.parse(localStorage.getItem('giga_calc_records_v4') || 'null');
@@ -409,7 +479,8 @@ export default function App() {
           if (parsed[key]) {
             defaults[key] = {
               best: parsed[key].best || {},
-              history: Array.isArray(parsed[key].history) ? parsed[key].history : []
+              history: Array.isArray(parsed[key].history) ? parsed[key].history : [],
+              bestSolved: parsed[key].bestSolved || {}
             };
           }
         }
@@ -429,11 +500,13 @@ export default function App() {
   // pagehide / pageshow は張り替えずに最新の状態を読む必要があるためミラーを持つ
   const tableDataRef = useRef(tableData);
   const modeRef = useRef(mode);
+  const danRef = useRef(activeDan);
   const countRef = useRef(count);
   const settingsRef = useRef(settings);
   useEffect(() => {
     tableDataRef.current = tableData;
     modeRef.current = mode;
+    danRef.current = activeDan;
     countRef.current = count;
     settingsRef.current = settings;
   });
@@ -449,7 +522,7 @@ export default function App() {
     window.addEventListener('mousedown', handleUserInteraction);
     window.addEventListener('keydown', handleUserInteraction);
 
-    generateTable(mode, count);
+    generateTable(mode, count, activeDan);
 
     return () => {
       window.removeEventListener('touchstart', handleUserInteraction);
@@ -458,12 +531,25 @@ export default function App() {
     };
   }, []);
 
+  // ⚠️ 書き込みは必ず try で受ける。読み込み（上の useState）は受けてあったが、
+  //    書き込みは受けておらず、保存領域に書けない端末では effect が例外を投げて
+  //    React が画面ごと外し、真っ白になっていた（実測 2026-11-15。容量がいっぱいの
+  //    とき、サイトデータの保存を止めてある端末のとき、の両方）。
+  //    書けなくても計算はできる。設定と記録が次に開いたときに残らないだけ。
   useEffect(() => {
-    localStorage.setItem('giga_calc_settings_v4', JSON.stringify(settings));
+    try {
+      localStorage.setItem('giga_calc_settings_v4', JSON.stringify(settings));
+    } catch (e) {
+      console.warn('設定を保存できませんでした:', e);
+    }
   }, [settings]);
 
   useEffect(() => {
-    localStorage.setItem('giga_calc_records_v4', JSON.stringify(records));
+    try {
+      localStorage.setItem('giga_calc_records_v4', JSON.stringify(records));
+    } catch (e) {
+      console.warn('記録を保存できませんでした:', e);
+    }
   }, [records]);
 
   // ⚠️ localStorage.clear() は使わないこと。`study.records.v1` は他アプリと
@@ -481,17 +567,19 @@ export default function App() {
 
   // Esc キーでモーダルを閉じられるようにする
   useEffect(() => {
-    if (!showSettings && !showStats && !showQuitConfirm) return;
+    if (!showSettings && !showStats && !showQuitConfirm && !showGradeConfirm && !showDan) return;
     const handleEsc = (e) => {
       if (e.key === 'Escape') {
         setShowSettings(false);
         setShowStats(false);
         setShowQuitConfirm(false);
+        setShowGradeConfirm(false);
+        setShowDan(false);
       }
     };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
-  }, [showSettings, showStats, showQuitConfirm]);
+  }, [showSettings, showStats, showQuitConfirm, showGradeConfirm, showDan]);
 
   // 🖥️ 提示モード（§2-11）
   //
@@ -598,6 +686,8 @@ export default function App() {
       }
       const model = await tfjs.loadGraphModel(`${import.meta.env.BASE_URL}model.json`);
       setTfModel(model);
+      // はじめて開いた端末でも、次からは圏外で手書きが使えるようにする（src/pwa.js）
+      keepLoadedFilesOffline();
       setAiStatus(<span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>き<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby>が<ruby>使<rp>(</rp><rt>つか</rt><rp>)</rp></ruby>えます</span>);
     } catch (e) {
       console.error("TF初期化エラー:", e);
@@ -666,12 +756,14 @@ export default function App() {
   // status: 'completed' | 'aborted'
   // exactTimeSec は画面タイマーの経過秒。復帰後のレコードは
   // セッション開始時点からの分だけを elapsedMs とする
-  const saveSession = useCallback((status, exactTimeSec) => {
+  // timeUp: 制限時間になって終わったか（学習ログの ext.timeUp に残す）
+  const saveSession = useCallback((status, exactTimeSec, timeUp = false) => {
     const session = sessionRef.current;
     if (!session) return;
     sessionRef.current = null;
     finalizeStudySession(session, {
       status,
+      timeUp,
       elapsedMs: Math.max(0, exactTimeSec - session.startOffsetSec) * 1000,
       activeMs: activeTimer.stop(),
       inputs: inputsRef.current,
@@ -679,19 +771,13 @@ export default function App() {
     });
   }, [activeTimer]);
 
-  const generateTable = useCallback((currentMode, currentCount) => {
+  // currentDan: かけ算で選んだ「だん」。選んでいなければ空（ぜんぶのだんから出す）
+  const generateTable = useCallback((currentMode, currentCount, currentDan = NO_DAN) => {
     const rowsCount = currentCount / 10;
 
-    const newCols = shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    const newRows = [];
-
-    for (let i = 0; i < rowsCount; i++) {
-      if (currentMode === '引き算') {
-        newRows.push(Math.floor(Math.random() * 10) + 10);
-      } else {
-        newRows.push(Math.floor(Math.random() * 10));
-      }
-    }
+    // 上は 0〜9 を並べかえた 10 個。左は同じ数が重ならないように選ぶ（src/board.js）
+    const newCols = makeCols();
+    const newRows = pickRows(currentMode, rowsCount, currentMode === 'かけ算' ? currentDan : NO_DAN);
 
     setTableData({ rows: newRows, cols: newCols });
     setInputs({});
@@ -699,19 +785,43 @@ export default function App() {
     sessionRef.current = null;
     setGameState('idle');
     setResultScore(null);
+    setTimedOut(false);
     timer.reset();
     clearAllCanvas();
   }, [timer.reset, clearAllCanvas]);
 
   const handleModeChange = (e) => {
-    setMode(e.target.value);
-    generateTable(e.target.value, count);
+    const newMode = e.target.value;
+    // かけ算へ戻ったとき、選んであるだんの数より多い行は作れない（同じ行を 2 つ出さない）
+    const newCount = Math.min(count, maxCount(newMode, newMode === 'かけ算' ? dan : NO_DAN));
+    setMode(newMode);
+    if (newCount !== count) setCount(newCount);
+    generateTable(newMode, newCount, dan);
   };
 
   const handleCountChange = (e) => {
     const newCount = parseInt(e.target.value, 10);
     setCount(newCount);
-    generateTable(mode, newCount);
+    generateTable(mode, newCount, dan);
+  };
+
+  // だんを選ぶ画面をひらく・きめる
+  const openDan = () => {
+    setDanDraft(dan);
+    setShowDan(true);
+  };
+  const toggleDanDraft = (n) => {
+    setDanDraft((prev) => (prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n].sort((a, b) => a - b)));
+  };
+  const applyDan = () => {
+    const picked = danDraft.length ? danDraft : NO_DAN;
+    // 選んだだんが、ぜんぶ出る問題数にする（7のだんだけなら 10問、3つなら 30問）。
+    // 選ぶのをやめたときは、問題数はそのまま
+    const newCount = picked.length ? picked.length * 10 : count;
+    setDan(picked);
+    setShowDan(false);
+    if (newCount !== count) setCount(newCount);
+    generateTable(mode, newCount, picked);
   };
 
   const startGame = () => {
@@ -720,6 +830,11 @@ export default function App() {
     setInputs({});
     inputsRef.current = {};
     setResultScore(null);
+    setTimedOut(false);
+    // この回の制限時間を決める（設定をとちゅうで変えても、この回は変えない）
+    const limitSec = settings.timeLimit || 0;
+    setActiveLimit(limitSec);
+    activeLimitRef.current = limitSec;
     setActiveCell({ r: 0, c: 0 });
     activeCellRef.current = { r: 0, c: 0 };
     runningRef.current = true;
@@ -733,6 +848,8 @@ export default function App() {
       cols: tableData.cols,
       autoScore: settings.autoScore,
       input: inputMethodOf(settings),
+      dan: activeDan,
+      timeLimitSec: limitSec,
     });
     markCellTiming(sessionRef.current, '0_0');
     activeTimer.start();
@@ -757,10 +874,19 @@ export default function App() {
       const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
       // date は年を含まない表示用文字列。並べ替え・集計に使えるよう ISO 8601 も持たせる
       const newRecord = { date: today, at: new Date().toISOString(), time: exactTime, count: count };
+      // だんを選んだ回には、どのだんだったかを残す（最近の記録に「7のだん」と出す）
+      const picked = activeDan.length > 0;
+      if (picked) newRecord.dan = activeDan;
 
       setRecords(prev => {
         const modeData = prev[mode];
         const newHistory = [newRecord, ...modeData.history].slice(0, 20);
+        // ⚠️ だんを選んだ回は、ベストタイムに入れない。
+        //    ベストタイムは「計算の種類 × 問題数」で 1 つ。1 のだんだけで出したタイムが
+        //    そこへ入ると、ぜんぶのだんから出したときのタイムと比べられなくなる
+        if (picked) {
+          return { ...prev, [mode]: { ...modeData, history: newHistory } };
+        }
         let newBest = modeData.best[count];
         if (!newBest || exactTime < newBest) {
           newBest = exactTime;
@@ -771,13 +897,14 @@ export default function App() {
         };
       });
     }
-  }, [count, mode, settings.sound, timer.stop, saveSession]);
+  }, [count, mode, activeDan, settings.sound, timer.stop, saveSession]);
 
   // 途中でやめた記録も残す（study.v1 §5.4）。
   // 「難しすぎる」「量が多すぎる」という重要なサインなので、捨ててはならない。
   // atSeconds を渡すと、その時点で締める（タブ離脱による中断で使う）
   const abortGame = useCallback((atSeconds) => {
     setShowQuitConfirm(false);
+    setShowGradeConfirm(false);
     if (!runningRef.current) return;
     runningRef.current = false;
     const exactTime = timer.stop(atSeconds);
@@ -858,6 +985,8 @@ export default function App() {
         cols,
         autoScore: settingsRef.current.autoScore,
         input: inputMethodOf(settingsRef.current),
+        dan: danRef.current,
+        timeLimitSec: activeLimitRef.current,
         scope: remaining,
         startOffsetSec: timer.peek(),
       });
@@ -882,21 +1011,41 @@ export default function App() {
     return 0;
   }, [mode, tableData]);
 
+  // 入力ずみのマスの数と、そのうち正解しているマスの数
+  const countAnswers = useCallback((allInputs) => {
+    let answered = 0;
+    let correct = 0;
+    for (let r = 0; r < tableData.rows.length; r++) {
+      for (let c = 0; c < tableData.cols.length; c++) {
+        const val = allInputs[`${r}_${c}`];
+        if (val === undefined || val === '') continue;
+        answered++;
+        if (parseInt(val, 10) === getCorrectAnswer(r, c)) correct++;
+      }
+    }
+    return { answered, correct };
+  }, [tableData, getCorrectAnswer]);
+
+  // すぐ判定オンで、もう正解しているマスか。正解したマスは入力を受けつけない
+  // （Cell の側でも disabled になる）。すぐ判定オフでは、どのマスも書き直せる
+  const isSolvedCell = useCallback((r, c) => {
+    if (!settings.autoScore) return false;
+    const val = inputsRef.current[`${r}_${c}`];
+    return val !== undefined && val !== '' && parseInt(val, 10) === getCorrectAnswer(r, c);
+  }, [settings.autoScore, getCorrectAnswer]);
+
+  // 「いま解いているマス」を移す。枠（activeCell）とフォーカスを必ずそろえて動かす
+  const focusCell = useCallback((r, c) => {
+    const cell = { r, c };
+    setActiveCell(cell);
+    activeCellRef.current = cell;
+    inputRefs.current[`${r}_${c}`]?.focus();
+  }, []);
+
   // force: 入力途中でも「全マス回答済みなら採点してよい」とみなすか
   // （Enter や「次へ」で明示的に確定した時に true）
   const checkCompletion = useCallback((newInputs, force = false) => {
-    let answeredCount = 0;
-    let correctCount = 0;
-    for (let r = 0; r < tableData.rows.length; r++) {
-      for (let c = 0; c < tableData.cols.length; c++) {
-        const ans = getCorrectAnswer(r, c);
-        const val = newInputs[`${r}_${c}`];
-        if (val !== undefined && val !== '') {
-          answeredCount++;
-          if (parseInt(val, 10) === ans) correctCount++;
-        }
-      }
-    }
+    const { answered: answeredCount, correct: correctCount } = countAnswers(newInputs);
 
     if (settings.autoScore) {
       // すぐ判定モードでは全マス正解で終了。
@@ -908,34 +1057,47 @@ export default function App() {
     } else if (answeredCount === count && force) {
       stopGame(correctCount);
     }
-  }, [count, getCorrectAnswer, stopGame, tableData, settings.autoScore]);
+  }, [count, countAnswers, stopGame, settings.autoScore]);
 
   const moveToNextCell = useCallback((r, c) => {
     // 確定操作（Enter / 次へ / →）の時点で全マス回答済みなら採点する
     checkCompletion(inputsRef.current, true);
     if (!runningRef.current) return; // 採点でゲームが終了した
 
-    // すぐ判定モードで既に正解済みのセルはスキップする
-    let nextR = r;
-    let nextC = c;
-    while (true) {
-      nextC++;
-      if (nextC >= 10) { nextC = 0; nextR++; }
-      if (nextR >= tableData.rows.length) return;
+    // 次に進むマスを、読む順（左から右・上から下）に探す。
+    // 表の最後まで行ったら、先頭へ戻って探しつづける。
+    //
+    // ⚠️ 最後のマスで止めてはいけない。以前は止めていたので、マスを飛ばして
+    //    最後まで解くと、枠が正解ずみの最後のマスに残った。そのままテンキーを押すと
+    //    正解ずみの答えが消えていた（実測 2026-11-15: のこり 1問 → 2問）。
+    const colsN = tableData.cols.length;
+    const total = tableData.rows.length * colsN;
+    const start = r * colsN + c;
+    for (let step = 1; step < total; step++) {
+      const idx = (start + step) % total;
+      const nextR = Math.floor(idx / colsN);
+      const nextC = idx % colsN;
+      const wrapped = start + step >= total;
       const val = inputsRef.current[`${nextR}_${nextC}`];
-      const alreadyCorrect = settings.autoScore && val !== undefined && val !== '' && parseInt(val, 10) === getCorrectAnswer(nextR, nextC);
-      if (!alreadyCorrect) break;
+      const filled = val !== undefined && val !== '';
+      // すぐ判定オン: もう正解しているマスは飛ばす。
+      // すぐ判定オフ: となりのマスへ進む（書き直せるので飛ばさない）。ただし
+      //   先頭へ戻ったあとは、まだ空いているマスまで飛ぶ
+      const skip = settings.autoScore ? isSolvedCell(nextR, nextC) : (wrapped && filled);
+      if (!skip) {
+        focusCell(nextR, nextC);
+        return;
+      }
     }
-    const nextCell = { r: nextR, c: nextC };
-    setActiveCell(nextCell);
-    activeCellRef.current = nextCell;
-    if (inputRefs.current[`${nextR}_${nextC}`]) {
-      inputRefs.current[`${nextR}_${nextC}`].focus();
-    }
-  }, [tableData, settings.autoScore, getCorrectAnswer, checkCompletion]);
+    // 進める先が無い（のこっているのは、いまのマスだけ）
+  }, [tableData, settings.autoScore, isSolvedCell, focusCell, checkCompletion]);
 
   const handleInputChange = useCallback((r, c, value) => {
     if (gameState !== 'playing') return;
+    // 正解ずみのマスには書きこまない（すぐ判定オン）。
+    // テンキーと手書きは「いま解いているマス」へ書くので、枠が正解ずみのマスに
+    // あると、そこへ足した数字が「まちがい」になって答えごと消えてしまう
+    if (isSolvedCell(r, c)) return;
 
     const val = value.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
 
@@ -966,7 +1128,7 @@ export default function App() {
     setInputs(newInputs);
     // 答えの桁数まで入力し終えたマスだけ「回答済み」として採点判定する
     checkCompletion(newInputs, val.length >= ansStr.length);
-  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas]);
+  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas, isSolvedCell]);
 
   const handleCellFocus = useCallback((r, c) => {
     const cell = { r, c };
@@ -993,38 +1155,111 @@ export default function App() {
       }
     }
 
+    // ⚠️ ←・↑・↓ は、正解ずみのマスを飛ばして「入力できるマス」まで動かす。
+    //    正解ずみのマスは disabled でフォーカスを受けない。となりのマスへ 1 つだけ
+    //    動かす形だと、枠だけがそこへ移ってフォーカスは元のマスに残り、
+    //    ・何回押しても枠がそのマスから先へ進まない（飛ばしたマスへ戻れない）
+    //    ・打った数字が、枠とは別のマスに入る
+    //    という食い違いが起きていた（実測 2026-11-15）。
     if (e.key === 'Enter') {
       moveToNextCell(r, c);
     } else if (e.key === 'ArrowRight') {
       e.preventDefault(); moveToNextCell(r, c);
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      let prevC = c - 1; let prevR = r;
-      if (prevC < 0) { prevC = 9; prevR--; }
-      if (prevR >= 0) {
-        const prevCell = { r: prevR, c: prevC };
-        setActiveCell(prevCell);
-        activeCellRef.current = prevCell;
-        inputRefs.current[`${prevR}_${prevC}`]?.focus();
+      const colsN = tableData.cols.length;
+      for (let idx = r * colsN + c - 1; idx >= 0; idx--) {
+        const prevR = Math.floor(idx / colsN);
+        const prevC = idx % colsN;
+        if (!isSolvedCell(prevR, prevC)) { focusCell(prevR, prevC); break; }
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (r + 1 < tableData.rows.length) {
-        const downCell = { r: r + 1, c };
-        setActiveCell(downCell);
-        activeCellRef.current = downCell;
-        inputRefs.current[`${r + 1}_${c}`]?.focus();
+      for (let nextR = r + 1; nextR < tableData.rows.length; nextR++) {
+        if (!isSolvedCell(nextR, c)) { focusCell(nextR, c); break; }
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      if (r - 1 >= 0) {
-        const upCell = { r: r - 1, c };
-        setActiveCell(upCell);
-        activeCellRef.current = upCell;
-        inputRefs.current[`${r - 1}_${c}`]?.focus();
+      for (let prevR = r - 1; prevR >= 0; prevR--) {
+        if (!isSolvedCell(prevR, c)) { focusCell(prevR, c); break; }
       }
     }
-  }, [moveToNextCell, tableData, settings.numpad, settings.handwriting, handleInputChange]);
+  }, [moveToNextCell, tableData, settings.numpad, settings.handwriting, handleInputChange, isSolvedCell, focusCell]);
+
+  // 「丸つけ する」ボタン（すぐ判定オフのときだけ出る）。
+  //
+  // ⚠️ すぐ判定オフの終わり方は「全部のマスに、答えの桁数ぶん入ったとき」だけだった。
+  //    最後に入れた答えが正解より桁の少ない数だと、全部うまっても採点が始まらない。
+  //    キーボードなら Enter、テンキーなら「次へ」で採点できるが、手書きだけの
+  //    タブレットにはどちらも無く、「のこり 0問」のまま終われなかった（実測 2026-11-15）。
+  //    いつでも押せるボタンを置く。空いているマスがあるときは、押しまちがいで
+  //    終わってしまわないように一度たずねる。
+  const gradeNow = useCallback(() => {
+    setShowGradeConfirm(false);
+    if (gameState !== 'playing' || settings.autoScore) return;
+    stopGame(countAnswers(inputsRef.current).correct);
+  }, [gameState, settings.autoScore, stopGame, countAnswers]);
+
+  const requestGrading = useCallback(() => {
+    if (gameState !== 'playing' || settings.autoScore) return;
+    if (countAnswers(inputsRef.current).answered < count) {
+      setShowGradeConfirm(true);
+      return;
+    }
+    gradeNow();
+  }, [gameState, settings.autoScore, countAnswers, count, gradeNow]);
+
+  // ⏳ 制限時間になったら、そこで終わる。
+  //    「2分で何問できるか」という取り組み方のため。全員が同じ時刻に終われるので、
+  //    一斉に始める授業で、早く終わった子が待つ・終わらない子が残る、が起きない。
+  const timeUp = useCallback(() => {
+    if (!runningRef.current) return;
+    runningRef.current = false;
+    setShowQuitConfirm(false);
+    setShowGradeConfirm(false);
+    const limitSec = activeLimitRef.current;
+    // ⚠️ 締める時刻は「制限時間ちょうど」にする。気づいた時刻（タブを隠していると
+    //    見はりが遅れる）で締めると、2分の約束が回によって 2分3秒になったりする
+    const exactTime = timer.stop(limitSec);
+    const { correct } = countAnswers(inputsRef.current);
+    setGameState('result');
+    setResultScore(correct);
+    setTimedOut(true);
+    if (settings.sound) playSound('finish');
+    saveSession('completed', exactTime, true);
+
+    // 「○分で ○問」を記録に残す。1問も正解していない回は残さない
+    if (correct === 0) return;
+    const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    // time も入れておく（古い版の画面は time があるものとして描くので、無いと落ちる）
+    const entry = { date: today, at: new Date().toISOString(), time: exactTime, count, limit: limitSec, solved: correct };
+    const picked = activeDan.length > 0;
+    if (picked) entry.dan = activeDan;
+    setRecords((prev) => {
+      const modeData = prev[mode];
+      const history = [entry, ...modeData.history].slice(0, 20);
+      const bestSolved = { ...(modeData.bestSolved || {}) };
+      // だんを選んだ回は「さいこう」に入れない（ベストタイムと同じ決まり）
+      if (!picked && correct > (bestSolved[limitSec] || 0)) bestSolved[limitSec] = correct;
+      return { ...prev, [mode]: { ...modeData, history, bestSolved } };
+    });
+  }, [mode, count, activeDan, settings.sound, timer.stop, countAnswers, saveSession]);
+
+  const timeUpRef = useRef(timeUp);
+  useEffect(() => { timeUpRef.current = timeUp; }, [timeUp]);
+  useEffect(() => {
+    if (gameState !== 'playing' || !activeLimit) return;
+    const watch = setInterval(() => {
+      if (timer.peek() >= activeLimit) timeUpRef.current();
+    }, 100);
+    return () => clearInterval(watch);
+  }, [gameState, activeLimit, timer.peek]);
+
+  // のこり時間（秒）。0 より小さくはしない
+  const remainingSeconds = useCallback(
+    () => Math.max(0, activeLimit - timer.peek()),
+    [activeLimit, timer.peek]
+  );
 
   const handleNumpadInput = useCallback((num) => {
     if (gameState !== 'playing' || !activeCellRef.current) return;
@@ -1075,7 +1310,13 @@ export default function App() {
     // 線の太さは canvas の実解像度に対する割合で決める。
     // 固定値にすると、DPR 補正で解像度が変わった端末だけ線が細くなり、
     // 28×28 に縮めたときの字の濃さが変わって認識率が落ちる
-    ctx.lineWidth = Math.max(8, canvas.width * 0.1125);
+    //
+    // ⚠️ 割合の元は「幅と高さの短いほう」にすること。幅だけで決めると、欄が横長になる
+    //    画面（iPad の縦向き・提示モード・分割画面）で線だけが太くなり、字がつぶれる。
+    //    欄の高さは 160px で変わらないのに、幅は画面に合わせて 3 倍近くまで広がるため。
+    //    実測（2026-11-15）: 線は Chromebook の横画面で 14.5px、iPad の縦向きで 40.7px。
+    //    同じ筆跡 20 字のうち読めたのは 19 字と 9 字。短いほうで決めると 18 字に戻った。
+    ctx.lineWidth = Math.max(8, Math.min(canvas.width, canvas.height) * 0.1125);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = '#334155';
@@ -1275,7 +1516,7 @@ export default function App() {
 
   // app-shell = 100dvh。100vh はモバイルのアドレスバー分だけはみ出す（§2-2）
   return (
-    <div className="app-shell bg-slate-100/50 text-slate-800 flex flex-col items-center">
+    <div className="app-shell bg-slate-100/50 text-slate-800 flex flex-col items-center" data-game-state={gameState}>
       <style>{`
         /* touch-action / tap-highlight / ふりがなの色などの共通の土台は
            index.css（GIGA Standard Part I §2）に集約してある。
@@ -1340,18 +1581,45 @@ export default function App() {
             <option value="かけ算">かけ算</option>
           </select>
           <select aria-label="問題数" value={count} onChange={handleCountChange} disabled={gameState === 'playing'} className="tap-44 bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer">
+            {/* だんを選んでいるときは、選んだ数より多い行を作れない（同じ行を 2 つ出さない） */}
             {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(n => (
-              <option key={n} value={n}>{n}問</option>
+              <option key={n} value={n} disabled={n > maxCount(mode, activeDan)}>{n}問</option>
             ))}
           </select>
 
-          <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end">
-            <Clock className="w-4 h-4 text-slate-500" />
-            <span ref={timer.displayRef} className={gameState === 'playing' ? 'text-blue-600 tabular-nums' : 'tabular-nums'}>
-              {gameState === 'result' ? timer.finalTime.toFixed(1) : "0.0"}
-            </span>
-            <span className="text-xs text-slate-500"><span><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
-          </div>
+          {/* 🔢 だんを選ぶ（かけ算のときだけ出る） */}
+          {mode === 'かけ算' && (
+            <button onClick={openDan} disabled={gameState === 'playing'} data-testid="dan-button" aria-label={`れんしゅうするだんをえらぶ（いまは ${activeDan.length ? `${activeDan.join('・')}のだん` : 'ぜんぶ'}）`} className="tap-44 min-h-[44px] bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 hover:bg-slate-50 whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
+              <span>{danLabel(activeDan)}</span>
+            </button>
+          )}
+
+          {/* ⏱ タイム。60 秒以上は「2分5.3秒」の形で出す。
+              「タイマーを かくす」設定のときは、とりくんでいる間は出さない
+              （時間が気になってあせる子のため）。終わったあとのタイムは出す */}
+          {(!settings.hideTimer || gameState === 'result') && (
+            <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end" data-testid="clock">
+              <Clock className="w-4 h-4 text-slate-500" aria-hidden="true" />
+              {/* 制限時間つきの回は、のこり時間を数える。はじめる前は、決めてある時間を出す */}
+              {((gameState === 'playing' && activeLimit > 0) || (gameState === 'idle' && settings.timeLimit > 0)) && (
+                <span className="text-xs text-slate-500 font-bold">のこり</span>
+              )}
+              <span className={gameState === 'playing' ? 'text-blue-600' : ''}>
+                {gameState === 'playing' && activeLimit > 0 && (
+                  <RunningClock getSeconds={remainingSeconds} whole unitClassName={CLOCK_UNIT_CLASS} />
+                )}
+                {gameState === 'playing' && !activeLimit && (
+                  <RunningClock getSeconds={timer.peek} unitClassName={CLOCK_UNIT_CLASS} />
+                )}
+                {gameState === 'idle' && (settings.timeLimit > 0
+                  ? <TimeText sec={settings.timeLimit} whole compact unitClassName={CLOCK_UNIT_CLASS} />
+                  : <TimeText sec={0} unitClassName={CLOCK_UNIT_CLASS} />)}
+                {gameState === 'result' && (
+                  <TimeText sec={timer.finalTime} unitClassName={CLOCK_UNIT_CLASS} />
+                )}
+              </span>
+            </div>
+          )}
 
           {gameState === 'idle' && (
             <button onClick={startGame} className="tap-44 btn-press bg-slate-700 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-800 text-sm whitespace-nowrap">
@@ -1364,7 +1632,7 @@ export default function App() {
             </button>
           )}
           {gameState === 'result' && (
-            <button onClick={() => generateTable(mode, count)} className="tap-44 btn-press bg-blue-600 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-blue-700 text-sm whitespace-nowrap">
+            <button onClick={() => generateTable(mode, count, dan)} className="tap-44 btn-press bg-blue-600 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-blue-700 text-sm whitespace-nowrap">
               <RefreshCw className="w-4 h-4" aria-hidden="true" /> <span>もう<ruby>一度<rp>(</rp><rt>いちど</rt><rp>)</rp></ruby></span>
             </button>
           )}
@@ -1401,16 +1669,27 @@ export default function App() {
           {gameState === 'result' && (
             <div className="mb-3 bg-slate-100 border-2 border-slate-300 rounded-xl p-3 text-center" role="status" aria-live="polite">
               <h2 className="text-xl font-bold text-slate-700 flex justify-center items-center gap-2">
-                <Trophy className="w-6 h-6 text-slate-500" aria-hidden="true" />
-                {resultScore === count ? (
+                {timedOut
+                  ? <Hourglass className="w-6 h-6 text-slate-500" aria-hidden="true" />
+                  : <Trophy className="w-6 h-6 text-slate-500" aria-hidden="true" />}
+                {timedOut ? (
+                  <span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>です！よく<ruby>頑張<rp>(</rp><rt>がんば</rt><rp>)</rp></ruby>ったね！</span>
+                ) : resultScore === count ? (
                   <span>クリア！よく<ruby>頑張<rp>(</rp><rt>がんば</rt><rp>)</rp></ruby>ったね！</span>
                 ) : (
                   <span>おわり！<ruby>正解<rp>(</rp><rt>せいかい</rt><rp>)</rp></ruby> {resultScore} / {count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span>
                 )}
               </h2>
-              <p className="text-2xl font-bold text-slate-800 mt-1">
-                タイム: <span className="text-blue-600 tabular-nums">{timer.finalTime.toFixed(1)}</span> <span><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span>
-              </p>
+              {timedOut ? (
+                // 時間になって終わった回は、タイムではなく「○分で ○問」を出す
+                <p className="text-2xl font-bold text-slate-800 mt-1" data-testid="result-timeup">
+                  <TimeText sec={activeLimit} whole compact /> で <span className="text-blue-600 tabular-nums">{resultScore}</span><ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby> できました
+                </p>
+              ) : (
+                <p className="text-2xl font-bold text-slate-800 mt-1">
+                  タイム: <span className="text-blue-600" data-testid="result-time"><TimeText sec={timer.finalTime} unitClassName="text-slate-800 mx-0.5" /></span>
+                </p>
+              )}
             </div>
           )}
 
@@ -1480,6 +1759,15 @@ export default function App() {
             </div>
           )}
 
+          {/* ✔ 丸つけ（すぐ判定オフのときだけ）。
+              全部うまったら自動で採点が始まるが、桁の足りない答えが最後に入ると
+              始まらない。空いているマスを残して終えたいときにも使う */}
+          {gameState === 'playing' && !settings.autoScore && (
+            <button onMouseDown={(e) => e.preventDefault()} onClick={requestGrading} className="btn-press w-full min-h-[48px] bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-xl shadow-sm flex items-center justify-center gap-2 px-4 py-2">
+              <CheckCircle className="w-5 h-5" aria-hidden="true" /> <span><ruby>丸<rp>(</rp><rt>まる</rt><rp>)</rp></ruby>つけ する</span>
+            </button>
+          )}
+
           {/* 🖌️ 手書き入力エリア */}
           {settings.handwriting && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
@@ -1487,9 +1775,19 @@ export default function App() {
                 <h2 className="text-sm font-bold text-slate-600 flex items-center gap-1">
                   <PenTool className="w-4 h-4" aria-hidden="true" /> <span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>き<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby></span>
                 </h2>
-                <button onMouseDown={(e) => e.preventDefault()} onClick={clearAllCanvas} className="tap-44 btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="手書きした数字を消す">
-                  <Eraser className="w-4 h-4" aria-hidden="true" /> <span><ruby>消<rp>(</rp><rt>け</rt><rp>)</rp></ruby>す</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button onMouseDown={(e) => e.preventDefault()} onClick={clearAllCanvas} className="tap-44 btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="手書きした数字を消す">
+                    <Eraser className="w-4 h-4" aria-hidden="true" /> <span><ruby>消<rp>(</rp><rt>け</rt><rp>)</rp></ruby>す</span>
+                  </button>
+                  {/* 手書きだけの端末（タブレット）には Enter もテンキーの「次へ」も無い。
+                      ここに無いと、マスを飛ばすことも、すぐ判定オフで次のマスへ進むことも、
+                      マスを指で押すしかなくなる */}
+                  {gameState === 'playing' && (
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c); }} className="tap-44 btn-press text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="つぎのマスへすすむ">
+                      <span><ruby>次<rp>(</rp><rt>つぎ</rt><rp>)</rp></ruby>へ</span> <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex justify-center gap-3 mb-2">
@@ -1609,15 +1907,65 @@ export default function App() {
         </div>
       )}
 
+      {/* ✔ 丸つけの確かめ（空いているマスが残っているときだけ出る） */}
+      {showGradeConfirm && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+          <div ref={gradeBoxRef} role="dialog" aria-modal="true" aria-labelledby="grade-title" tabIndex={-1} className="bg-white rounded-2xl shadow-xl w-full max-w-xs overflow-hidden animate-[fadeIn_0.2s_ease-out]">
+            <div className="p-5 text-center">
+              <div id="grade-title" className="font-bold text-lg text-slate-700 mb-1"><span><ruby>丸<rp>(</rp><rt>まる</rt><rp>)</rp></ruby>つけ しますか？</span></div>
+              <div className="text-xs text-slate-600"><span>まだ {count - solvedCount}マス あいています</span></div>
+            </div>
+            <div className="p-4 pt-0 flex gap-2">
+              <button onClick={() => setShowGradeConfirm(false)} className="flex-1 btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span>つづける</span></button>
+              <button onClick={gradeNow} className="flex-1 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-50"><span><ruby>丸<rp>(</rp><rt>まる</rt><rp>)</rp></ruby>つけ する</span></button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔢 だんを選ぶ画面（かけ算のときだけ開ける） */}
+      {showDan && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+          <div ref={danBoxRef} role="dialog" aria-modal="true" aria-labelledby="dan-title" tabIndex={-1} className="modal-shell bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col">
+            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
+              <h2 id="dan-title" className="font-bold text-slate-700 flex items-center gap-2"><Grid3x3 className="w-5 h-5 text-slate-600" aria-hidden="true" /> <span>だんを えらぶ</span></h2>
+              <button onClick={() => setShowDan(false)} className="tap-44 text-slate-500 hover:text-slate-700" aria-label="えらばずにとじる"><X className="w-6 h-6" aria-hidden="true" /></button>
+            </div>
+            <div className="scroll-area p-4 overflow-y-auto">
+              <p className="text-sm text-slate-600 mb-3 leading-relaxed"><span><ruby>練習<rp>(</rp><rt>れんしゅう</rt><rp>)</rp></ruby>する だんを おして えらびます。<ruby>何<rp>(</rp><rt>なに</rt><rp>)</rp></ruby>も えらばなければ、ぜんぶの だんから <ruby>出<rp>(</rp><rt>で</rt><rp>)</rp></ruby>ます。</span></p>
+              {/* 選んだものは、色だけでなく ✓ のしるしでも分かるようにする（§2-8） */}
+              <div className="grid grid-cols-2 gap-2">
+                {rowPool('かけ算').map((n) => {
+                  const on = danDraft.includes(n);
+                  return (
+                    <button key={n} onClick={() => toggleDanDraft(n)} aria-pressed={on} className={`btn-press min-h-[48px] rounded-xl border-2 font-bold text-lg flex items-center justify-center gap-1.5 ${on ? 'bg-blue-600 border-blue-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+                      {on && <Check className="w-5 h-5" aria-hidden="true" />}
+                      <span>{n}のだん</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-4 pt-3 shrink-0 border-t border-slate-100 flex gap-2">
+              <button onClick={() => setDanDraft(NO_DAN)} disabled={danDraft.length === 0} className="flex-1 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-50 disabled:opacity-50"><span>ぜんぶ はずす</span></button>
+              <button onClick={applyDan} className="flex-1 btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span>きめる</span></button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ⚙️ 設定モーダル */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-          <div ref={settingsBoxRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out]">
-            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
+          {/* ⚠️ modal-shell（高さの上限）と、中身のスクロールを外さないこと。
+              設定の行が増えると、高さの低い画面（スマホ・横向き）では下の行と
+              「閉じる」が画面の外に出て、押せなくなる */}
+          <div ref={settingsBoxRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="modal-shell bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col">
+            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
               <h2 id="settings-title" className="font-bold text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-600" aria-hidden="true" /> <span><ruby>設定<rp>(</rp><rt>せってい</rt><rp>)</rp></ruby></span></h2>
               <button onClick={() => setShowSettings(false)} className="tap-44 text-slate-500 hover:text-slate-700" aria-label="設定をとじる"><X className="w-6 h-6" aria-hidden="true" /></button>
             </div>
-            <div className="p-4 flex flex-col gap-4">
+            <div className="scroll-area p-4 flex flex-col gap-4 overflow-y-auto">
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
                   {settings.sound ? <Volume2 className="w-5 h-5 text-blue-600" /> : <VolumeX className="w-5 h-5 text-slate-500" />}
@@ -1662,6 +2010,39 @@ export default function App() {
                 <input type="checkbox" checked={settings.autoScore} onChange={(e) => setSettings({ ...settings, autoScore: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
               </label>
 
+              <label className="flex items-center justify-between gap-2 p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <Hourglass className="w-5 h-5 text-blue-600 shrink-0" />
+                  <div>
+                    <div className="font-bold text-slate-700"><span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>を<ruby>決<rp>(</rp><rt>き</rt><rp>)</rp></ruby>める</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>になったら<ruby>終<rp>(</rp><rt>お</rt><rp>)</rp></ruby>わります</span></div>
+                  </div>
+                </div>
+                {/* とりくんでいる間は変えられない（この回の約束は、スタートのときに決まる） */}
+                <select
+                  aria-label="制限時間"
+                  value={settings.timeLimit || 0}
+                  disabled={gameState === 'playing'}
+                  onChange={(e) => setSettings({ ...settings, timeLimit: parseInt(e.target.value, 10) || 0 })}
+                  className="tap-44 bg-white border border-slate-300 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none focus:border-slate-500 cursor-pointer"
+                >
+                  {TIME_LIMITS.map((limit) => (
+                    <option key={limit} value={limit}>{limit === 0 ? 'なし' : limitLabel(limit)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <EyeOff className="w-5 h-5 text-blue-600" />
+                  <div>
+                    <div className="font-bold text-slate-700"><span>タイマーを かくす</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>計算<rp>(</rp><rt>けいさん</rt><rp>)</rp></ruby>の<ruby>間<rp>(</rp><rt>あいだ</rt><rp>)</rp></ruby>は<ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>を<ruby>出<rp>(</rp><rt>だ</rt><rp>)</rp></ruby>しません</span></div>
+                  </div>
+                </div>
+                <input type="checkbox" checked={!!settings.hideTimer} onChange={(e) => setSettings({ ...settings, hideTimer: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+              </label>
+
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
                   <MoveHorizontal className="w-5 h-5 text-blue-600" />
@@ -1681,7 +2062,7 @@ export default function App() {
                 </select>
               </label>
             </div>
-            <div className="p-4 pt-0">
+            <div className="p-4 pt-3 shrink-0 border-t border-slate-100">
               <button onClick={() => setShowSettings(false)} className="w-full btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span><ruby>閉<rp>(</rp><rt>と</rt><rp>)</rp></ruby>じる</span></button>
             </div>
           </div>
@@ -1725,11 +2106,26 @@ export default function App() {
                       {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(c => records[calcMode].best[c] && (
                         <div key={`best-${c}`} className="bg-white px-2 py-1 rounded shadow-sm text-sm border border-slate-200">
                           <span className="text-slate-500 text-xs mr-1"><span>{c}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby>:</span></span>
-                          <span className="font-bold text-blue-600"><span>{records[calcMode].best[c].toFixed(1)}<ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
+                          <span className="font-bold text-blue-600"><TimeText sec={records[calcMode].best[c]} /></span>
                         </div>
                       ))}
                       {Object.keys(records[calcMode].best).length === 0 && <span className="text-sm text-slate-500"><span>まだ<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby>がありません</span></span>}
                     </div>
+
+                    {/* ⏳ 制限時間つきでとりくんだときの、いちばん多く正解できた数 */}
+                    {TIME_LIMITS.some((limit) => limit > 0 && records[calcMode].bestSolved?.[limit]) && (
+                      <>
+                        <div className="text-xs font-bold text-slate-500 flex items-center gap-1 mt-3 mb-2"><Hourglass className="w-4 h-4" aria-hidden="true" /> <span><ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>を<ruby>決<rp>(</rp><rt>き</rt><rp>)</rp></ruby>めたときの さいこう</span></div>
+                        <div className="flex gap-4 flex-wrap">
+                          {TIME_LIMITS.filter((limit) => limit > 0 && records[calcMode].bestSolved?.[limit]).map((limit) => (
+                            <div key={`solved-${limit}`} className="bg-white px-2 py-1 rounded shadow-sm text-sm border border-slate-200">
+                              <span className="text-slate-500 text-xs mr-1"><TimeText sec={limit} whole compact />:</span>
+                              <span className="font-bold text-blue-600 tabular-nums">{records[calcMode].bestSolved[limit]}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   {/* 📈 学習ログ (study.v1) からの集計。
@@ -1780,8 +2176,21 @@ export default function App() {
                         <li key={i} className="flex justify-between items-center text-sm bg-white border border-slate-100 shadow-sm px-3 py-2 rounded-lg">
                           <span className="text-slate-500">{hist.date}</span>
                           <div>
-                            <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
-                            <span className="font-bold text-slate-700 tabular-nums"><span>{hist.time.toFixed(1)}<ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
+                            {Array.isArray(hist.dan) && hist.dan.length > 0 && (
+                              <span className="bg-blue-100 text-blue-900 px-2 py-0.5 rounded text-xs mr-1"><span>{hist.dan.join('・')}のだん</span></span>
+                            )}
+                            {hist.limit > 0 ? (
+                              // 時間になって終わった回は「2分で 64問」
+                              <>
+                                <span className="bg-amber-100 text-amber-900 px-2 py-0.5 rounded text-xs mr-2"><span><TimeText sec={hist.limit} whole compact />で</span></span>
+                                <span className="font-bold text-slate-700 tabular-nums"><span>{hist.solved}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
+                                <span className="font-bold text-slate-700"><TimeText sec={hist.time} /></span>
+                              </>
+                            )}
                           </div>
                         </li>
                       ))}

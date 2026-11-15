@@ -34,6 +34,28 @@ jobs:
       - name: 学習ログのテスト
         run: npm test
 
+  # 実ブラウザで実際に操作するテスト（tests/e2e/）。
+  # ⚠️ 上の品質ゲートは文字列を読む検査なので、「押したら何が起きるか」は見えない。
+  #    2026-11-15 に実ブラウザで動かすと、ゲートが 48 件ぜんぶ通っている状態で、
+  #    正解ずみの答えが消える・全部入れても終われない・圏外で真っ白になる、が残っていた。
+  #    check と並べて走らせる（ブラウザを入れるぶん時間がかかるので、ゲートの結果を待たせない）。
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      # headless で動かすだけなので、小さいほう（headless shell）だけを入れる
+      - name: ブラウザを入れる
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: 実ブラウザでのテスト
+        run: npm run test:e2e
+
   # 正本コピー（standards-map.json に載るファイル）が
   # GIGAyama.github.io/standards/ とずれていないか
   drift:
