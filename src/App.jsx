@@ -333,13 +333,17 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  // 「丸つけ する」を、空いているマスが残ったまま押したときの確かめ
+  const [showGradeConfirm, setShowGradeConfirm] = useState(false);
 
   const settingsBoxRef = useRef(null);
   const statsBoxRef = useRef(null);
   const quitBoxRef = useRef(null);
+  const gradeBoxRef = useRef(null);
   useModalFocus(settingsBoxRef, showSettings);
   useModalFocus(statsBoxRef, showStats);
   useModalFocus(quitBoxRef, showQuitConfirm);
+  useModalFocus(gradeBoxRef, showGradeConfirm);
 
   // ホーム画面・デスクトップへの追加を案内できるか。
   // ⚠️ 案内できるときだけボタンを出す。出せないボタンを置いておくと
@@ -494,17 +498,18 @@ export default function App() {
 
   // Esc キーでモーダルを閉じられるようにする
   useEffect(() => {
-    if (!showSettings && !showStats && !showQuitConfirm) return;
+    if (!showSettings && !showStats && !showQuitConfirm && !showGradeConfirm) return;
     const handleEsc = (e) => {
       if (e.key === 'Escape') {
         setShowSettings(false);
         setShowStats(false);
         setShowQuitConfirm(false);
+        setShowGradeConfirm(false);
       }
     };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
-  }, [showSettings, showStats, showQuitConfirm]);
+  }, [showSettings, showStats, showQuitConfirm, showGradeConfirm]);
 
   // 🖥️ 提示モード（§2-11）
   //
@@ -793,6 +798,7 @@ export default function App() {
   // atSeconds を渡すと、その時点で締める（タブ離脱による中断で使う）
   const abortGame = useCallback((atSeconds) => {
     setShowQuitConfirm(false);
+    setShowGradeConfirm(false);
     if (!runningRef.current) return;
     runningRef.current = false;
     const exactTime = timer.stop(atSeconds);
@@ -897,21 +903,41 @@ export default function App() {
     return 0;
   }, [mode, tableData]);
 
+  // 入力ずみのマスの数と、そのうち正解しているマスの数
+  const countAnswers = useCallback((allInputs) => {
+    let answered = 0;
+    let correct = 0;
+    for (let r = 0; r < tableData.rows.length; r++) {
+      for (let c = 0; c < tableData.cols.length; c++) {
+        const val = allInputs[`${r}_${c}`];
+        if (val === undefined || val === '') continue;
+        answered++;
+        if (parseInt(val, 10) === getCorrectAnswer(r, c)) correct++;
+      }
+    }
+    return { answered, correct };
+  }, [tableData, getCorrectAnswer]);
+
+  // すぐ判定オンで、もう正解しているマスか。正解したマスは入力を受けつけない
+  // （Cell の側でも disabled になる）。すぐ判定オフでは、どのマスも書き直せる
+  const isSolvedCell = useCallback((r, c) => {
+    if (!settings.autoScore) return false;
+    const val = inputsRef.current[`${r}_${c}`];
+    return val !== undefined && val !== '' && parseInt(val, 10) === getCorrectAnswer(r, c);
+  }, [settings.autoScore, getCorrectAnswer]);
+
+  // 「いま解いているマス」を移す。枠（activeCell）とフォーカスを必ずそろえて動かす
+  const focusCell = useCallback((r, c) => {
+    const cell = { r, c };
+    setActiveCell(cell);
+    activeCellRef.current = cell;
+    inputRefs.current[`${r}_${c}`]?.focus();
+  }, []);
+
   // force: 入力途中でも「全マス回答済みなら採点してよい」とみなすか
   // （Enter や「次へ」で明示的に確定した時に true）
   const checkCompletion = useCallback((newInputs, force = false) => {
-    let answeredCount = 0;
-    let correctCount = 0;
-    for (let r = 0; r < tableData.rows.length; r++) {
-      for (let c = 0; c < tableData.cols.length; c++) {
-        const ans = getCorrectAnswer(r, c);
-        const val = newInputs[`${r}_${c}`];
-        if (val !== undefined && val !== '') {
-          answeredCount++;
-          if (parseInt(val, 10) === ans) correctCount++;
-        }
-      }
-    }
+    const { answered: answeredCount, correct: correctCount } = countAnswers(newInputs);
 
     if (settings.autoScore) {
       // すぐ判定モードでは全マス正解で終了。
@@ -923,34 +949,47 @@ export default function App() {
     } else if (answeredCount === count && force) {
       stopGame(correctCount);
     }
-  }, [count, getCorrectAnswer, stopGame, tableData, settings.autoScore]);
+  }, [count, countAnswers, stopGame, settings.autoScore]);
 
   const moveToNextCell = useCallback((r, c) => {
     // 確定操作（Enter / 次へ / →）の時点で全マス回答済みなら採点する
     checkCompletion(inputsRef.current, true);
     if (!runningRef.current) return; // 採点でゲームが終了した
 
-    // すぐ判定モードで既に正解済みのセルはスキップする
-    let nextR = r;
-    let nextC = c;
-    while (true) {
-      nextC++;
-      if (nextC >= 10) { nextC = 0; nextR++; }
-      if (nextR >= tableData.rows.length) return;
+    // 次に進むマスを、読む順（左から右・上から下）に探す。
+    // 表の最後まで行ったら、先頭へ戻って探しつづける。
+    //
+    // ⚠️ 最後のマスで止めてはいけない。以前は止めていたので、マスを飛ばして
+    //    最後まで解くと、枠が正解ずみの最後のマスに残った。そのままテンキーを押すと
+    //    正解ずみの答えが消えていた（実測 2026-11-15: のこり 1問 → 2問）。
+    const colsN = tableData.cols.length;
+    const total = tableData.rows.length * colsN;
+    const start = r * colsN + c;
+    for (let step = 1; step < total; step++) {
+      const idx = (start + step) % total;
+      const nextR = Math.floor(idx / colsN);
+      const nextC = idx % colsN;
+      const wrapped = start + step >= total;
       const val = inputsRef.current[`${nextR}_${nextC}`];
-      const alreadyCorrect = settings.autoScore && val !== undefined && val !== '' && parseInt(val, 10) === getCorrectAnswer(nextR, nextC);
-      if (!alreadyCorrect) break;
+      const filled = val !== undefined && val !== '';
+      // すぐ判定オン: もう正解しているマスは飛ばす。
+      // すぐ判定オフ: となりのマスへ進む（書き直せるので飛ばさない）。ただし
+      //   先頭へ戻ったあとは、まだ空いているマスまで飛ぶ
+      const skip = settings.autoScore ? isSolvedCell(nextR, nextC) : (wrapped && filled);
+      if (!skip) {
+        focusCell(nextR, nextC);
+        return;
+      }
     }
-    const nextCell = { r: nextR, c: nextC };
-    setActiveCell(nextCell);
-    activeCellRef.current = nextCell;
-    if (inputRefs.current[`${nextR}_${nextC}`]) {
-      inputRefs.current[`${nextR}_${nextC}`].focus();
-    }
-  }, [tableData, settings.autoScore, getCorrectAnswer, checkCompletion]);
+    // 進める先が無い（のこっているのは、いまのマスだけ）
+  }, [tableData, settings.autoScore, isSolvedCell, focusCell, checkCompletion]);
 
   const handleInputChange = useCallback((r, c, value) => {
     if (gameState !== 'playing') return;
+    // 正解ずみのマスには書きこまない（すぐ判定オン）。
+    // テンキーと手書きは「いま解いているマス」へ書くので、枠が正解ずみのマスに
+    // あると、そこへ足した数字が「まちがい」になって答えごと消えてしまう
+    if (isSolvedCell(r, c)) return;
 
     const val = value.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
 
@@ -981,7 +1020,7 @@ export default function App() {
     setInputs(newInputs);
     // 答えの桁数まで入力し終えたマスだけ「回答済み」として採点判定する
     checkCompletion(newInputs, val.length >= ansStr.length);
-  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas]);
+  }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas, isSolvedCell]);
 
   const handleCellFocus = useCallback((r, c) => {
     const cell = { r, c };
@@ -1008,38 +1047,59 @@ export default function App() {
       }
     }
 
+    // ⚠️ ←・↑・↓ は、正解ずみのマスを飛ばして「入力できるマス」まで動かす。
+    //    正解ずみのマスは disabled でフォーカスを受けない。となりのマスへ 1 つだけ
+    //    動かす形だと、枠だけがそこへ移ってフォーカスは元のマスに残り、
+    //    ・何回押しても枠がそのマスから先へ進まない（飛ばしたマスへ戻れない）
+    //    ・打った数字が、枠とは別のマスに入る
+    //    という食い違いが起きていた（実測 2026-11-15）。
     if (e.key === 'Enter') {
       moveToNextCell(r, c);
     } else if (e.key === 'ArrowRight') {
       e.preventDefault(); moveToNextCell(r, c);
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      let prevC = c - 1; let prevR = r;
-      if (prevC < 0) { prevC = 9; prevR--; }
-      if (prevR >= 0) {
-        const prevCell = { r: prevR, c: prevC };
-        setActiveCell(prevCell);
-        activeCellRef.current = prevCell;
-        inputRefs.current[`${prevR}_${prevC}`]?.focus();
+      const colsN = tableData.cols.length;
+      for (let idx = r * colsN + c - 1; idx >= 0; idx--) {
+        const prevR = Math.floor(idx / colsN);
+        const prevC = idx % colsN;
+        if (!isSolvedCell(prevR, prevC)) { focusCell(prevR, prevC); break; }
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (r + 1 < tableData.rows.length) {
-        const downCell = { r: r + 1, c };
-        setActiveCell(downCell);
-        activeCellRef.current = downCell;
-        inputRefs.current[`${r + 1}_${c}`]?.focus();
+      for (let nextR = r + 1; nextR < tableData.rows.length; nextR++) {
+        if (!isSolvedCell(nextR, c)) { focusCell(nextR, c); break; }
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      if (r - 1 >= 0) {
-        const upCell = { r: r - 1, c };
-        setActiveCell(upCell);
-        activeCellRef.current = upCell;
-        inputRefs.current[`${r - 1}_${c}`]?.focus();
+      for (let prevR = r - 1; prevR >= 0; prevR--) {
+        if (!isSolvedCell(prevR, c)) { focusCell(prevR, c); break; }
       }
     }
-  }, [moveToNextCell, tableData, settings.numpad, settings.handwriting, handleInputChange]);
+  }, [moveToNextCell, tableData, settings.numpad, settings.handwriting, handleInputChange, isSolvedCell, focusCell]);
+
+  // 「丸つけ する」ボタン（すぐ判定オフのときだけ出る）。
+  //
+  // ⚠️ すぐ判定オフの終わり方は「全部のマスに、答えの桁数ぶん入ったとき」だけだった。
+  //    最後に入れた答えが正解より桁の少ない数だと、全部うまっても採点が始まらない。
+  //    キーボードなら Enter、テンキーなら「次へ」で採点できるが、手書きだけの
+  //    タブレットにはどちらも無く、「のこり 0問」のまま終われなかった（実測 2026-11-15）。
+  //    いつでも押せるボタンを置く。空いているマスがあるときは、押しまちがいで
+  //    終わってしまわないように一度たずねる。
+  const gradeNow = useCallback(() => {
+    setShowGradeConfirm(false);
+    if (gameState !== 'playing' || settings.autoScore) return;
+    stopGame(countAnswers(inputsRef.current).correct);
+  }, [gameState, settings.autoScore, stopGame, countAnswers]);
+
+  const requestGrading = useCallback(() => {
+    if (gameState !== 'playing' || settings.autoScore) return;
+    if (countAnswers(inputsRef.current).answered < count) {
+      setShowGradeConfirm(true);
+      return;
+    }
+    gradeNow();
+  }, [gameState, settings.autoScore, countAnswers, count, gradeNow]);
 
   const handleNumpadInput = useCallback((num) => {
     if (gameState !== 'playing' || !activeCellRef.current) return;
@@ -1296,7 +1356,7 @@ export default function App() {
 
   // app-shell = 100dvh。100vh はモバイルのアドレスバー分だけはみ出す（§2-2）
   return (
-    <div className="app-shell bg-slate-100/50 text-slate-800 flex flex-col items-center">
+    <div className="app-shell bg-slate-100/50 text-slate-800 flex flex-col items-center" data-game-state={gameState}>
       <style>{`
         /* touch-action / tap-highlight / ふりがなの色などの共通の土台は
            index.css（GIGA Standard Part I §2）に集約してある。
@@ -1501,6 +1561,15 @@ export default function App() {
             </div>
           )}
 
+          {/* ✔ 丸つけ（すぐ判定オフのときだけ）。
+              全部うまったら自動で採点が始まるが、桁の足りない答えが最後に入ると
+              始まらない。空いているマスを残して終えたいときにも使う */}
+          {gameState === 'playing' && !settings.autoScore && (
+            <button onMouseDown={(e) => e.preventDefault()} onClick={requestGrading} className="btn-press w-full min-h-[48px] bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-xl shadow-sm flex items-center justify-center gap-2 px-4 py-2">
+              <CheckCircle className="w-5 h-5" aria-hidden="true" /> <span><ruby>丸<rp>(</rp><rt>まる</rt><rp>)</rp></ruby>つけ する</span>
+            </button>
+          )}
+
           {/* 🖌️ 手書き入力エリア */}
           {settings.handwriting && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
@@ -1508,9 +1577,19 @@ export default function App() {
                 <h2 className="text-sm font-bold text-slate-600 flex items-center gap-1">
                   <PenTool className="w-4 h-4" aria-hidden="true" /> <span><ruby>手書<rp>(</rp><rt>てが</rt><rp>)</rp></ruby>き<ruby>入力<rp>(</rp><rt>にゅうりょく</rt><rp>)</rp></ruby></span>
                 </h2>
-                <button onMouseDown={(e) => e.preventDefault()} onClick={clearAllCanvas} className="tap-44 btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="手書きした数字を消す">
-                  <Eraser className="w-4 h-4" aria-hidden="true" /> <span><ruby>消<rp>(</rp><rt>け</rt><rp>)</rp></ruby>す</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button onMouseDown={(e) => e.preventDefault()} onClick={clearAllCanvas} className="tap-44 btn-press text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="手書きした数字を消す">
+                    <Eraser className="w-4 h-4" aria-hidden="true" /> <span><ruby>消<rp>(</rp><rt>け</rt><rp>)</rp></ruby>す</span>
+                  </button>
+                  {/* 手書きだけの端末（タブレット）には Enter もテンキーの「次へ」も無い。
+                      ここに無いと、マスを飛ばすことも、すぐ判定オフで次のマスへ進むことも、
+                      マスを指で押すしかなくなる */}
+                  {gameState === 'playing' && (
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c); }} className="tap-44 btn-press text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="つぎのマスへすすむ">
+                      <span><ruby>次<rp>(</rp><rt>つぎ</rt><rp>)</rp></ruby>へ</span> <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex justify-center gap-3 mb-2">
@@ -1625,6 +1704,22 @@ export default function App() {
             <div className="p-4 pt-0 flex gap-2">
               <button onClick={() => setShowQuitConfirm(false)} className="flex-1 btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span>つづける</span></button>
               <button onClick={() => abortGame()} className="flex-1 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-50"><span>やめる</span></button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ✔ 丸つけの確かめ（空いているマスが残っているときだけ出る） */}
+      {showGradeConfirm && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+          <div ref={gradeBoxRef} role="dialog" aria-modal="true" aria-labelledby="grade-title" tabIndex={-1} className="bg-white rounded-2xl shadow-xl w-full max-w-xs overflow-hidden animate-[fadeIn_0.2s_ease-out]">
+            <div className="p-5 text-center">
+              <div id="grade-title" className="font-bold text-lg text-slate-700 mb-1"><span><ruby>丸<rp>(</rp><rt>まる</rt><rp>)</rp></ruby>つけ しますか？</span></div>
+              <div className="text-xs text-slate-600"><span>まだ {count - solvedCount}マス あいています</span></div>
+            </div>
+            <div className="p-4 pt-0 flex gap-2">
+              <button onClick={() => setShowGradeConfirm(false)} className="flex-1 btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span>つづける</span></button>
+              <button onClick={gradeNow} className="flex-1 btn-press bg-white border-2 border-slate-300 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-50"><span><ruby>丸<rp>(</rp><rt>まる</rt><rp>)</rp></ruby>つけ する</span></button>
             </div>
           </div>
         </div>
