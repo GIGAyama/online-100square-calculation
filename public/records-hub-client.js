@@ -178,10 +178,33 @@
   });
 
   /**
-   * まだ写していない記録をハブへ送ります。
+   * 原本のうち、前回写したところより後ろの記録を返します。
    *
-   * 原本は追記されていくので、ふだんは「前回までの件数から先」だけを送れば足ります。
-   * アプリが記録を並べかえたり消したりして件数が合わなくなったときは、
+   * 件数だけを目印にしてはいけません。アプリは原本に上限（学習ログは500件）を設けて
+   * 古いものから捨てるので、上限に達すると件数が変わらなくなり、
+   * 「前回までの件数から先」がいつまでも空になって、以後1件も写せなくなります。
+   * そこで、控えてある id のうち原本でいちばん後ろにあるものを境目にします。
+   *
+   * 控えの id が原本に1つも見つからないとき:
+   * - 控えに id があるのに見つからない（控えより古いものしか残っていない）→ 全部送り直す
+   * - 控えに id が無い（初回・古い形の控え）→ これまでどおり件数で切る
+   * どちらでも、同じ id はハブが弾くので二重にはなりません。
+   */
+  function freshRecords(log, mark) {
+    if (mark.ids.length > 0) {
+      const knownIds = new Set(mark.ids);
+      for (let i = log.length - 1; i >= 0; i--) {
+        const rec = log[i];
+        if (rec && knownIds.has(rec.id)) return log.slice(i + 1);
+      }
+      return log.slice();
+    }
+    return (mark.count <= log.length) ? log.slice(mark.count) : log.slice();
+  }
+
+  /**
+   * まだ写していない記録をハブへ送ります。
+   * アプリが記録を並べかえたり消したりして境目が見つからないときは、
    * 安全側に倒して全部を送り直します（同じ id はハブが弾くので二重にはなりません）。
    */
   async function sync() {
@@ -192,7 +215,7 @@
       if (log.length === 0) return;
 
       const mark = readMark();
-      const fresh = (mark.count <= log.length) ? log.slice(mark.count) : log.slice();
+      const fresh = freshRecords(log, mark);
       const knownIds = new Set(mark.ids);
       const pending = fresh.filter(rec => isRecord(rec) && !knownIds.has(rec.id));
       if (pending.length === 0) {
