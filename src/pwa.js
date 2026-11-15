@@ -56,6 +56,9 @@ export function registerServiceWorker(onUpdateReady) {
 
       // 前回のうちに入っていた場合も拾う
       if (registration.waiting && navigator.serviceWorker.controller) notify(registration.waiting);
+
+      // はじめて開いたときに画面が先に取ってしまった分を、控えてもらう
+      keepLoadedFilesOffline();
     } catch (e) {
       // 登録できなくてもアプリ自体は動く。オフラインで開けないだけ
       console.warn('[pwa] Service Worker の登録に失敗しました', e);
@@ -65,6 +68,42 @@ export function registerServiceWorker(onUpdateReady) {
   // ✅ もう load が済んでいるなら、その場で走らせる（§3-6）
   if (document.readyState === 'complete') start();
   else window.addEventListener('load', start, { once: true });
+}
+
+/**
+ * 画面がもう取りにいったファイルを、Service Worker に控えてもらう。
+ *
+ * はじめて開いたとき、画面はまだ Service Worker の管理下にない。その間に取ったもの
+ * （手書きの TensorFlow.js・書体）は sw.js の fetch を通らず、キャッシュに残らない。
+ * 実測（2026-11-15）: オンラインで 1 回開いただけの端末には TensorFlow.js が残らず、
+ * 圏外では手書きが「AIの準備に失敗しました」になっていた。
+ *
+ * 呼ぶのは 2 か所。Service Worker の登録が済んだとき（上の start）と、
+ * 手書きの読み取りモデルを読み終えたとき（App.jsx）。TensorFlow.js は登録より
+ * あとに読み終わることがあるため、片方だけでは取りこぼす。
+ *
+ * ⚠️ 送るのは /assets/ の下（ビルドが名前に中身のハッシュを付けたもの）だけ。
+ *    名前が変わらないファイルをここで控えると、直しても古いものが出つづける。
+ */
+export function keepLoadedFilesOffline() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.ready.then((registration) => {
+    const worker = registration.active;
+    if (!worker) return;
+    const urls = performance.getEntriesByType('resource')
+      .map((entry) => entry.name)
+      .filter((name) => {
+        try {
+          const url = new URL(name);
+          return url.origin === location.origin && url.pathname.includes('/assets/');
+        } catch {
+          return false;
+        }
+      });
+    if (urls.length) worker.postMessage({ type: 'CACHE_URLS', urls: [...new Set(urls)] });
+  }).catch(() => {
+    // 控えられなくてもアプリは動く。次に開いたときに sw.js の fetch が控える
+  });
 }
 
 /** ホーム画面／デスクトップにインストール済みで開いているか */
