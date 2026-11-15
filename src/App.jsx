@@ -6,6 +6,7 @@ import {
 } from './studySession';
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
 import { isStandalone, keepLoadedFilesOffline } from './pwa';
+import { makeCols, pickRows } from './board';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
@@ -62,16 +63,6 @@ const playSound = (type) => {
     osc.start(now);
     osc.stop(now + 0.8);
   }
-};
-
-// 偏りのないシャッフル (Fisher–Yates)
-const shuffle = (array) => {
-  const arr = [...array];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
 };
 
 // ==========================================
@@ -702,16 +693,9 @@ export default function App() {
   const generateTable = useCallback((currentMode, currentCount) => {
     const rowsCount = currentCount / 10;
 
-    const newCols = shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    const newRows = [];
-
-    for (let i = 0; i < rowsCount; i++) {
-      if (currentMode === '引き算') {
-        newRows.push(Math.floor(Math.random() * 10) + 10);
-      } else {
-        newRows.push(Math.floor(Math.random() * 10));
-      }
-    }
+    // 上は 0〜9 を並べかえた 10 個。左は同じ数が重ならないように選ぶ（src/board.js）
+    const newCols = makeCols();
+    const newRows = pickRows(currentMode, rowsCount);
 
     setTableData({ rows: newRows, cols: newCols });
     setInputs({});

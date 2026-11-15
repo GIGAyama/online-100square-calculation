@@ -158,3 +158,26 @@ test('手書き欄の「次へ」で、マスを押さなくても次のマス�
     await context.close();
   }
 });
+
+test('左の数は重ならない。100問なら 0〜9（引き算は 10〜19）が 1 回ずつ出る', async () => {
+  // 以前: 1 行ずつ乱数で選んでいたので同じ数の行が重なり、100 通りのうち平均 65 通りしか出なかった
+  const { context, page } = await open();
+  try {
+    await page.waitForSelector('table.sq-table');
+    const sorted = (list) => [...list].sort((a, b) => a - b);
+    for (const [mode, expected] of [
+      ['たし算', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]],
+      ['かけ算', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]],
+      ['引き算', [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]],
+    ]) {
+      await page.selectOption('select[aria-label="計算の種類"]', mode);
+      await page.selectOption('select[aria-label="問題数"]', '100');
+      assert.deepEqual(sorted((await readBoard(page)).rows), expected, `${mode} 100問`);
+      await page.selectOption('select[aria-label="問題数"]', '40');
+      const rows = (await readBoard(page)).rows;
+      assert.equal(new Set(rows).size, 4, `${mode} 40問: ${rows.join(',')}`);
+    }
+  } finally {
+    await context.close();
+  }
+});
