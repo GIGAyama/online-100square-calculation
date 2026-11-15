@@ -90,10 +90,12 @@ export const DEFAULT_SETTINGS = {
  */
 export async function openApp(browser, base, {
   settings = {}, viewport = { width: 1366, height: 768 }, serviceWorkers = 'block',
-  initScript = null, hasTouch = false,
+  initScript = null, hasTouch = false, fakeClock = false,
 } = {}) {
   const context = await browser.newContext({ viewport, serviceWorkers, hasTouch });
   const page = await context.newPage();
+  // 時間を早送りしたいテスト用。page.clock.fastForward() で、待たずに何分も進められる
+  if (fakeClock) await page.clock.install();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript((s) => {
@@ -198,4 +200,15 @@ export async function waitForHandwriting(page, timeout = 60000) {
     return /使えます|失敗しました/.test(copy.textContent);
   }, null, { timeout });
   return handwritingStatus(page);
+}
+
+/** 画面の文字を、ふりがなを除いて読む（「2分5.3秒」のように、見たままの文になる） */
+export function plainText(page, selector) {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const copy = el.cloneNode(true);
+    copy.querySelectorAll('rt,rp').forEach((n) => n.remove());
+    return copy.textContent.replace(/\s+/g, ' ').trim();
+  }, selector);
 }

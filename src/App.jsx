@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2 } from 'lucide-react';
+import { Calculator, Settings, Play, RefreshCw, Trophy, History, X, CheckCircle, Volume2, VolumeX, Keyboard, BarChart2, Clock, ArrowRight, PenTool, Eraser, MoveHorizontal, Target, LogOut, Flame, Download, Sparkles, Maximize2, Minimize2, EyeOff } from 'lucide-react';
 import {
   APP_ID, MODE_ID, answerOf, inputMethodOf, allCellKeys,
   createStudySession, recordAttempt, markCellTiming, finalizeStudySession,
@@ -7,6 +7,7 @@ import {
 import { loadStudyRecords, summarizeByMode, formatDuration } from './studyStats';
 import { isStandalone, keepLoadedFilesOffline } from './pwa';
 import { makeCols, pickRows } from './board';
+import { splitTime, splitRemaining, minuteReading } from './timeText';
 
 // ==========================================
 // 🎵 効果音生成エンジン (Web Audio API)
@@ -66,25 +67,16 @@ const playSound = (type) => {
 };
 
 // ==========================================
-// ⚡ カスタムフック: 高精度＆軽量タイマー
+// ⚡ カスタムフック: タイマー
 // ==========================================
+// 計るのは performance.now() の差だけ。画面に描くのは、下の RunningClock が受け持つ。
 const useHighResTimer = () => {
-  const displayRef = useRef(null);
   const startTimeRef = useRef(0);
-  const reqRef = useRef(null);
   const [finalTime, setFinalTime] = useState(0);
 
   const start = useCallback(() => {
     startTimeRef.current = performance.now();
     setFinalTime(0);
-    const update = () => {
-      const diff = (performance.now() - startTimeRef.current) / 1000;
-      if (displayRef.current) {
-        displayRef.current.textContent = diff.toFixed(1);
-      }
-      reqRef.current = requestAnimationFrame(update);
-    };
-    reqRef.current = requestAnimationFrame(update);
   }, []);
 
   // 経過時間を止めずに読む（中断時に「タブを離れた時刻」を控えるのに使う）
@@ -93,36 +85,70 @@ const useHighResTimer = () => {
   // atSeconds を渡すと、その時点で止めたものとして締める。
   // タブを離れたまま戻らなかった中断で、待っていた時間を含めないために使う
   const stop = useCallback((atSeconds) => {
-    if (reqRef.current) cancelAnimationFrame(reqRef.current);
     const final = atSeconds !== undefined
       ? atSeconds
       : (performance.now() - startTimeRef.current) / 1000;
     setFinalTime(final);
-    if (displayRef.current) {
-      displayRef.current.textContent = final.toFixed(1);
-    }
     return final;
   }, []);
 
-  const reset = useCallback(() => {
-    if (reqRef.current) cancelAnimationFrame(reqRef.current);
-    setFinalTime(0);
-    if (displayRef.current) {
-      displayRef.current.textContent = "0.0";
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (reqRef.current) cancelAnimationFrame(reqRef.current);
-    };
-  }, []);
+  const reset = useCallback(() => { setFinalTime(0); }, []);
 
   return useMemo(
-    () => ({ displayRef, start, stop, peek, reset, finalTime }),
+    () => ({ start, stop, peek, reset, finalTime }),
     [start, stop, peek, reset, finalTime]
   );
 };
+
+// ==========================================
+// 🕒 タイムの表示
+// ==========================================
+// 60 秒以上は「2分5.3秒」の形で出す。
+// 以前は何分かかっても「612.4秒」と出していた。100問に 10 分かかる子は、
+// 自分のタイムを読めなかった。分け方と「分」の読みは src/timeText.js にある。
+// whole を付けると、秒を整数で出す（のこり時間の表示に使う）
+const TimeText = ({ sec, whole = false, unitClassName = '' }) => {
+  const { minutes, seconds } = whole ? splitRemaining(sec) : splitTime(sec);
+  return (
+    <span className="tabular-nums whitespace-nowrap">
+      {minutes > 0 && (
+        <>
+          {minutes}
+          <span className={unitClassName}><ruby>分<rp>(</rp><rt>{minuteReading(minutes)}</rt><rp>)</rp></ruby></span>
+        </>
+      )}
+      {whole ? seconds : seconds.toFixed(1)}
+      <span className={unitClassName}><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span>
+    </span>
+  );
+};
+
+// ヘッダーのタイムで、単位（分・秒）だけを小さく出すための指定
+const CLOCK_UNIT_CLASS = 'text-xs text-slate-500 ml-0.5';
+
+// 動いているあいだのタイムを描く小さな部品。
+// ⚠️ この数字を App の state にしないこと。App ごと 1 秒に 10 回描き直され、
+//    そのたびに 100 マスぶんの比較が走る。描き直すのは、この部品だけにする。
+const RunningClock = memo(({ getSeconds, whole = false, unitClassName }) => {
+  const [sec, setSec] = useState(() => getSeconds());
+  useEffect(() => {
+    let frame;
+    let shown = null;
+    const tick = () => {
+      const now = getSeconds();
+      // 表示が変わるときだけ描き直す（0.1 秒きざみ。のこり時間は 1 秒きざみ）
+      const key = whole ? Math.ceil(now) : Math.floor(now * 10);
+      if (key !== shown) {
+        shown = key;
+        setSec(now);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [getSeconds, whole]);
+  return <TimeText sec={sec} whole={whole} unitClassName={unitClassName} />;
+});
 
 // ==========================================
 // ⏱ カスタムフック: 実際に操作していた時間 (activeMs) の計測
@@ -311,7 +337,9 @@ export default function App() {
       numpad: false,
       handwriting: true,
       autoScore: true,
-      inputPosition: 'right'
+      inputPosition: 'right',
+      // とりくんでいる間、タイムを出さない（時間が気になってあせる子のため）
+      hideTimer: false
     };
     try {
       const saved = JSON.parse(localStorage.getItem('giga_calc_settings_v4') || 'null');
@@ -1410,13 +1438,19 @@ export default function App() {
             ))}
           </select>
 
-          <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end">
-            <Clock className="w-4 h-4 text-slate-500" />
-            <span ref={timer.displayRef} className={gameState === 'playing' ? 'text-blue-600 tabular-nums' : 'tabular-nums'}>
-              {gameState === 'result' ? timer.finalTime.toFixed(1) : "0.0"}
-            </span>
-            <span className="text-xs text-slate-500"><span><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
-          </div>
+          {/* ⏱ タイム。60 秒以上は「2分5.3秒」の形で出す。
+              「タイマーを かくす」設定のときは、とりくんでいる間は出さない
+              （時間が気になってあせる子のため）。終わったあとのタイムは出す */}
+          {(!settings.hideTimer || gameState === 'result') && (
+            <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end" data-testid="clock">
+              <Clock className="w-4 h-4 text-slate-500" aria-hidden="true" />
+              <span className={gameState === 'playing' ? 'text-blue-600' : ''}>
+                {gameState === 'playing'
+                  ? <RunningClock getSeconds={timer.peek} unitClassName={CLOCK_UNIT_CLASS} />
+                  : <TimeText sec={gameState === 'result' ? timer.finalTime : 0} unitClassName={CLOCK_UNIT_CLASS} />}
+              </span>
+            </div>
+          )}
 
           {gameState === 'idle' && (
             <button onClick={startGame} className="tap-44 btn-press bg-slate-700 text-white font-bold py-1.5 px-4 rounded-xl shadow-sm flex items-center gap-1.5 hover:bg-slate-800 text-sm whitespace-nowrap">
@@ -1474,7 +1508,7 @@ export default function App() {
                 )}
               </h2>
               <p className="text-2xl font-bold text-slate-800 mt-1">
-                タイム: <span className="text-blue-600 tabular-nums">{timer.finalTime.toFixed(1)}</span> <span><ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span>
+                タイム: <span className="text-blue-600" data-testid="result-time"><TimeText sec={timer.finalTime} unitClassName="text-slate-800 mx-0.5" /></span>
               </p>
             </div>
           )}
@@ -1712,12 +1746,15 @@ export default function App() {
       {/* ⚙️ 設定モーダル */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-          <div ref={settingsBoxRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out]">
-            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
+          {/* ⚠️ modal-shell（高さの上限）と、中身のスクロールを外さないこと。
+              設定の行が増えると、高さの低い画面（スマホ・横向き）では下の行と
+              「閉じる」が画面の外に出て、押せなくなる */}
+          <div ref={settingsBoxRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="modal-shell bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.2s_ease-out] flex flex-col">
+            <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
               <h2 id="settings-title" className="font-bold text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-600" aria-hidden="true" /> <span><ruby>設定<rp>(</rp><rt>せってい</rt><rp>)</rp></ruby></span></h2>
               <button onClick={() => setShowSettings(false)} className="tap-44 text-slate-500 hover:text-slate-700" aria-label="設定をとじる"><X className="w-6 h-6" aria-hidden="true" /></button>
             </div>
-            <div className="p-4 flex flex-col gap-4">
+            <div className="scroll-area p-4 flex flex-col gap-4 overflow-y-auto">
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
                   {settings.sound ? <Volume2 className="w-5 h-5 text-blue-600" /> : <VolumeX className="w-5 h-5 text-slate-500" />}
@@ -1762,6 +1799,17 @@ export default function App() {
                 <input type="checkbox" checked={settings.autoScore} onChange={(e) => setSettings({ ...settings, autoScore: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
               </label>
 
+              <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
+                <div className="flex items-center gap-3">
+                  <EyeOff className="w-5 h-5 text-blue-600" />
+                  <div>
+                    <div className="font-bold text-slate-700"><span>タイマーを かくす</span></div>
+                    <div className="text-xs text-slate-600"><span><ruby>計算<rp>(</rp><rt>けいさん</rt><rp>)</rp></ruby>の<ruby>間<rp>(</rp><rt>あいだ</rt><rp>)</rp></ruby>は<ruby>時間<rp>(</rp><rt>じかん</rt><rp>)</rp></ruby>を<ruby>出<rp>(</rp><rt>だ</rt><rp>)</rp></ruby>しません</span></div>
+                  </div>
+                </div>
+                <input type="checkbox" checked={!!settings.hideTimer} onChange={(e) => setSettings({ ...settings, hideTimer: e.target.checked })} className="w-5 h-5 accent-slate-600 cursor-pointer" />
+              </label>
+
               <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors">
                 <div className="flex items-center gap-3">
                   <MoveHorizontal className="w-5 h-5 text-blue-600" />
@@ -1781,7 +1829,7 @@ export default function App() {
                 </select>
               </label>
             </div>
-            <div className="p-4 pt-0">
+            <div className="p-4 pt-3 shrink-0 border-t border-slate-100">
               <button onClick={() => setShowSettings(false)} className="w-full btn-press bg-slate-700 text-white font-bold py-3 rounded-xl hover:bg-slate-800"><span><ruby>閉<rp>(</rp><rt>と</rt><rp>)</rp></ruby>じる</span></button>
             </div>
           </div>
@@ -1825,7 +1873,7 @@ export default function App() {
                       {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(c => records[calcMode].best[c] && (
                         <div key={`best-${c}`} className="bg-white px-2 py-1 rounded shadow-sm text-sm border border-slate-200">
                           <span className="text-slate-500 text-xs mr-1"><span>{c}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby>:</span></span>
-                          <span className="font-bold text-blue-600"><span>{records[calcMode].best[c].toFixed(1)}<ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
+                          <span className="font-bold text-blue-600"><TimeText sec={records[calcMode].best[c]} /></span>
                         </div>
                       ))}
                       {Object.keys(records[calcMode].best).length === 0 && <span className="text-sm text-slate-500"><span>まだ<ruby>記録<rp>(</rp><rt>きろく</rt><rp>)</rp></ruby>がありません</span></span>}
@@ -1881,7 +1929,7 @@ export default function App() {
                           <span className="text-slate-500">{hist.date}</span>
                           <div>
                             <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-xs mr-2"><span>{hist.count}<ruby>問<rp>(</rp><rt>もん</rt><rp>)</rp></ruby></span></span>
-                            <span className="font-bold text-slate-700 tabular-nums"><span>{hist.time.toFixed(1)}<ruby>秒<rp>(</rp><rt>びょう</rt><rp>)</rp></ruby></span></span>
+                            <span className="font-bold text-slate-700"><TimeText sec={hist.time} /></span>
                           </div>
                         </li>
                       ))}
