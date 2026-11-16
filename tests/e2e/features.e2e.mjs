@@ -285,3 +285,27 @@ test('とりくんでいる間にタイムの字数がふえても、マスの�
     }
   }
 });
+
+test('「タイマーを かくす」と「時間を決める」を両方入れると、のこり時間も出さず、時間になったら終わる', async () => {
+  // 2026-11-16 に決めた仕様。「タイマーを かくす」は時間を見せないための設定なので、
+  // 制限時間つきの回でも、のこり時間は出さない（時間になると、予告なくそこで終わる）。
+  // 「予告なく終わるのはおかしい」と、のこりだけ出す形に直さないこと
+  const { context, page } = await open({ settings: { hideTimer: true, timeLimit: 60 }, fakeClock: true });
+  try {
+    await page.waitForSelector('table.sq-table');
+    assert.equal(await page.locator('[data-testid="clock"]').count(), 0, 'はじめる前も、決めた時間を出さない');
+
+    await chooseAndStart(page, { mode: 'たし算', count: 100 });
+    await solveFocused(page);
+    await page.clock.fastForward(30_000);
+    assert.equal(await page.locator('[data-testid="clock"]').count(), 0, 'とりくんでいる間も、のこり時間を出さない');
+    assert.doesNotMatch(await plainText(page, 'nav'), /のこり/);
+
+    await page.clock.fastForward(31_000);
+    await waitForState(page, 'result');
+    assert.equal(await plainText(page, '[data-testid="result-timeup"]'), '1分 で 1問 できました');
+    assert.equal(await page.locator('[data-testid="clock"]').count(), 1, '終わったあとは、時間を出す');
+  } finally {
+    await context.close();
+  }
+});
