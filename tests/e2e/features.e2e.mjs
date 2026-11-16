@@ -171,7 +171,10 @@ test('時間を決めると、時間になったところで終わり、「○�
     assert.deepEqual(saved.records.bestSolved, { 60: 3 }, '「1分で さいこう 3問」が残る');
     assert.deepEqual(saved.records.best, {}, 'ベストタイムには入れない（ぜんぶは解いていない）');
 
-    assert.equal(saved.log.status, 'completed', '自分でやめたのではないので、中断にはしない');
+    // 盤面を最後まで解いていないので、学習ログでは完走（completed）にしない。
+    // まなびクエストは completed を「完走」として、タイム・じこベストに使う（1.8.0 では
+    // 制限時間ちょうどの 60 秒が「100問 60秒」の自己ベストになっていた）
+    assert.equal(saved.log.status, 'aborted', '完走ではない');
     assert.equal(saved.log.ext.timeUp, true);
     assert.equal(saved.log.ext.timeLimitMs, 60000);
     assert.equal(saved.log.elapsedMs, 60000, '締める時刻は、制限時間ちょうど');
@@ -211,6 +214,7 @@ test('時間を決めていても、時間内に全部解ければ、いつも�
     assert.equal(saved.log.length, 1);
     assert.equal(saved.log[0].ext.timeLimitMs, 60000);
     assert.equal(saved.log[0].ext.timeUp, undefined);
+    assert.equal(saved.log[0].status, 'completed', '時間内に全部解いた回は完走');
   } finally {
     await context.close();
   }
@@ -231,6 +235,83 @@ test('すぐ判定オフでも、時間になれば、入れたところまで�
     const after = await readBoard(page);
     assert.equal(after.cells.filter((cell) => cell.correct).length, 2);
     assert.equal(after.cells.filter((cell) => cell.wrong).length, 1);
+    const log = await page.evaluate(() => JSON.parse(localStorage.getItem('study.records.v1')).at(-1));
+    assert.equal(log.status, 'aborted', '空いているマスが残っているので、完走ではない');
+    assert.equal(log.ext.timeUp, true);
+  } finally {
+    await context.close();
+  }
+});
+
+test('だんを 10 こ ぜんぶ えらんだときは、「ぜんぶ」と同じにあつかう', async () => {
+  // 以前: 盤面は「ぜんぶ」と同じなのに、だんをえらんだ回としてベストタイムから外していた
+  const { context, page } = await open();
+  try {
+    await page.waitForSelector('table.sq-table');
+    await page.selectOption('select[aria-label="計算の種類"]', 'かけ算');
+    const danButton = page.locator('[data-testid="dan-button"]');
+    await danButton.click();
+    const dialog = page.getByRole('dialog');
+    for (let n = 0; n <= 9; n++) await dialog.getByRole('button', { name: `${n}のだん` }).click();
+    await dialog.getByRole('button', { name: 'きめる' }).click();
+    assert.match(await danButton.innerText(), /ぜんぶ/);
+
+    await page.selectOption('select[aria-label="問題数"]', '10');
+    await chooseAndStart(page);
+    for (let i = 0; i < 10; i++) await solveFocused(page);
+    await waitForState(page, 'result');
+    const saved = await page.evaluate(() => ({
+      records: JSON.parse(localStorage.getItem('giga_calc_records_v4'))['かけ算'],
+      log: JSON.parse(localStorage.getItem('study.records.v1')).at(-1),
+    }));
+    assert.ok(saved.records.best[10] > 0, 'ベストタイムに入る');
+    assert.equal(saved.log.ext.dan, undefined);
+  } finally {
+    await context.close();
+  }
+});
+
+test('とりくんでいる間にタイムの字数がふえても、マスの表の位置は動かない', async () => {
+  // 以前: 幅によっては、1分になった瞬間や「のこり」の表示が変わった瞬間にヘッダーが折り返し、
+  //       マスの表が 39px 下へ動いた
+  const tableTop = (page) => page.evaluate(() => Math.round(document.querySelector('table.sq-table').getBoundingClientRect().top));
+  for (const [width, settings, advance] of [
+    [652, {}, 61_000],                       // 59.9秒 → 1分0.0秒
+    [686, { timeLimit: 120 }, 2_000],        // のこり 2分0秒 → のこり 1分59秒
+    [790, { timeLimit: 600 }, 2_000],        // のこり 10分0秒 → のこり 9分59秒
+  ]) {
+    const { context, page } = await open({ settings, viewport: { width, height: 900 }, fakeClock: true });
+    try {
+      await chooseAndStart(page, { mode: 'たし算', count: 10 });
+      const before = await tableTop(page);
+      await page.clock.fastForward(advance);
+      await page.waitForTimeout(200);
+      assert.equal(await tableTop(page), before, `幅 ${width}px`);
+    } finally {
+      await context.close();
+    }
+  }
+});
+
+test('「タイマーを かくす」と「時間を決める」を両方入れると、のこり時間も出さず、時間になったら終わる', async () => {
+  // 2026-11-16 に決めた仕様。「タイマーを かくす」は時間を見せないための設定なので、
+  // 制限時間つきの回でも、のこり時間は出さない（時間になると、予告なくそこで終わる）。
+  // 「予告なく終わるのはおかしい」と、のこりだけ出す形に直さないこと
+  const { context, page } = await open({ settings: { hideTimer: true, timeLimit: 60 }, fakeClock: true });
+  try {
+    await page.waitForSelector('table.sq-table');
+    assert.equal(await page.locator('[data-testid="clock"]').count(), 0, 'はじめる前も、決めた時間を出さない');
+
+    await chooseAndStart(page, { mode: 'たし算', count: 100 });
+    await solveFocused(page);
+    await page.clock.fastForward(30_000);
+    assert.equal(await page.locator('[data-testid="clock"]').count(), 0, 'とりくんでいる間も、のこり時間を出さない');
+    assert.doesNotMatch(await plainText(page, 'nav'), /のこり/);
+
+    await page.clock.fastForward(31_000);
+    await waitForState(page, 'result');
+    assert.equal(await plainText(page, '[data-testid="result-timeup"]'), '1分 で 1問 できました');
+    assert.equal(await page.locator('[data-testid="clock"]').count(), 1, '終わったあとは、時間を出す');
   } finally {
     await context.close();
   }

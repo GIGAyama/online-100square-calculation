@@ -306,8 +306,19 @@ const Cell = memo(({
     }
   }, [val, disabled]);
 
+  // とりくんでいる間に、もう正解しているマス（すぐ判定オン）。
+  //
+  // ⚠️ 押しても何も起きないようにしておく（input は pointer-events を切り、td の mousedown は
+  //    既定の動きを止める）。disabled にしてあるだけだと、押したときに pointerdown は届いて
+  //    枠がそこへ移り、フォーカスはどのマスにも無くなる。テンキーもキーボードも効かず、
+  //    未回答のマスを押し直すまで何も入らなくなっていた（実測 2026-11-16）。
+  const solved = !disabled && autoScore && val !== '' && parseInt(val, 10) === ans;
+
   return (
-    <td className={`border-2 border-slate-300 p-0 relative ${isActive ? 'ring-2 ring-slate-500 z-10' : ''}`}>
+    <td
+      className={`border-2 border-slate-300 p-0 relative ${isActive ? 'ring-2 ring-slate-500 z-10' : ''}`}
+      onMouseDown={solved ? (e) => e.preventDefault() : undefined}
+    >
       <input
         ref={el => { inputRefs.current[`${r}_${c}`] = el; }}
         type={suppressOsKeyboard ? 'text' : 'tel'}
@@ -322,7 +333,7 @@ const Cell = memo(({
         enterKeyHint="next"
         aria-label={ariaLabel}
         value={val}
-        disabled={disabled || (autoScore && parseInt(val, 10) === ans)}
+        disabled={disabled || solved}
         // readOnly なマスに focus が飛ばない端末でも「いま解いているマス」が
         // 切り替わるように、タップ時点でも対象セルを確定させる
         onPointerDown={() => { if (!isActive) onFocus(r, c); }}
@@ -330,7 +341,7 @@ const Cell = memo(({
         onChange={(e) => onChange(r, c, e.target.value)}
         onKeyDown={(e) => onKeyDown(e, r, c)}
         className={`text-center font-bold outline-none bg-transparent transition-colors ${cellClass} ${flash ? 'cell-error-flash' : ''}`}
-        style={{ width: '100%', height: '100%' }}
+        style={{ width: '100%', height: '100%', pointerEvents: solved ? 'none' : undefined }}
       />
     </td>
   );
@@ -707,7 +718,25 @@ export default function App() {
         isDirtyRef.current[i] = false;
       }
     }
-    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+    if (ocrTimerRef.current) {
+      clearTimeout(ocrTimerRef.current);
+      ocrTimerRef.current = null;
+    }
+  }, []);
+
+  // 読み取りの予約が残っていれば、待たずに、いま読み取る。
+  //
+  // ⚠️ 読み取りは「指を離して 0.4 秒後」に走る。その前に「次へ」「丸つけ する」や別のマスを
+  //    押すと、フォーカスの移動が予約ごと線を消し、書いた答えが捨てられていた
+  //    （実測 2026-11-16: 離して 0.15〜0.34 秒で「次へ」を押すと、マスは空のまま枠だけ進む）。
+  //    すぐ判定オフでは「書く → 次へ」を毎マスくり返すので、手の早い子ほど答えが入らない。
+  //    押した時点で読み取りを済ませてから、その操作をつづける。
+  const flushHandwriting = useCallback(() => {
+    if (!ocrTimerRef.current) return;
+    clearTimeout(ocrTimerRef.current);
+    ocrTimerRef.current = null;
+    // 読み取りは同期で終わる（待つ処理が無い）ので、戻った時点でマスに値が入っている
+    drawHandlersRef.current.recognizeHandwriting?.();
   }, []);
 
   // 手書き欄の解像度を、実際に表示されている大きさに合わせる（§2-5）。
@@ -814,7 +843,10 @@ export default function App() {
     setDanDraft((prev) => (prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n].sort((a, b) => a - b)));
   };
   const applyDan = () => {
-    const picked = danDraft.length ? danDraft : NO_DAN;
+    // 10 こ ぜんぶ えらんだときは、えらんでいないのと同じ盤面になる。「ぜんぶ」にそろえる
+    // （えらんだ回あつかいにすると、同じ盤面なのにベストタイムに入らなくなる）
+    const all = danDraft.length >= rowPool('かけ算').length;
+    const picked = danDraft.length && !all ? danDraft : NO_DAN;
     // 選んだだんが、ぜんぶ出る問題数にする（7のだんだけなら 10問、3つなら 30問）。
     // 選ぶのをやめたときは、問題数はそのまま
     const newCount = picked.length ? picked.length * 10 : count;
@@ -861,14 +893,25 @@ export default function App() {
     timer.start();
   };
 
-  const stopGame = useCallback((finalScore) => {
+  // status: 学習ログに残す終わり方。'completed' は「盤面を最後まで解いた（完走した）」回だけ。
+  //
+  // ⚠️ 完走していない回を 'completed' にしないこと。まなびクエストは square100 の 'completed' を
+  //    「完走」として「100マス計算記録」シートに書き出し、タイム・じこベスト・ランキング・
+  //    経験値に使う（GIGAyama/Gamification の manabi-quest/10_studylog.gs buildCalcRecordRow_）。
+  //    じこベストには点数の条件が無いので、1.8.0 では
+  //      ・制限時間 1 分で 100問 → タイム 60 秒の「完走」
+  //      ・1 マスだけ答えて「丸つけ する」 → 数秒の「完走」
+  //    が自己ベストとして残り、本人にも二度と更新できなくなっていた（2026-11-16 に確認）。
+  //    1.8.0 より前は、終わり方が「全部正解」「全部うめた」の 2 つしかなく、
+  //    'completed' はいつも完走だった。その約束に戻す。
+  const stopGame = useCallback((finalScore, status = 'completed') => {
     if (!runningRef.current) return;
     runningRef.current = false;
     const exactTime = timer.stop();
     setGameState('result');
     setResultScore(finalScore);
     if (settings.sound) playSound('finish');
-    saveSession('completed', exactTime);
+    saveSession(status, exactTime);
 
     if (finalScore === count) {
       const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -1131,12 +1174,29 @@ export default function App() {
   }, [gameState, getCorrectAnswer, settings, moveToNextCell, checkCompletion, clearAllCanvas, isSolvedCell]);
 
   const handleCellFocus = useCallback((r, c) => {
+    // 別のマスへ移る前に、書きかけの手書きを「いままでのマス」へ読み取っておく。
+    // （読み取った答えが正解で次のマスへ進んだ場合も、このあと、押されたマスへ移る）
+    const prev = activeCellRef.current;
+    if (prev && (prev.r !== r || prev.c !== c)) flushHandwriting();
     const cell = { r, c };
     setActiveCell(cell);
     activeCellRef.current = cell;
     markCellTiming(sessionRef.current, `${r}_${c}`);
     clearAllCanvas();
-  }, [clearAllCanvas]);
+  }, [clearAllCanvas, flushHandwriting]);
+
+  // 「次へ」ボタン・Enter・→ で、いまのマスから次へ進む。
+  // 書きかけの手書きがあれば、先に読み取る。読み取った答えが正解で、もう次のマスへ
+  // 進んでいたときは、それ以上は進めない（2 マス進んでしまう）
+  const advanceByUser = useCallback(() => {
+    const before = activeCellRef.current;
+    if (!before) return;
+    flushHandwriting();
+    if (!runningRef.current) return;      // 読み取った答えで、全部そろって終わった
+    const now = activeCellRef.current;
+    if (!now || now.r !== before.r || now.c !== before.c) return;
+    moveToNextCell(now.r, now.c);
+  }, [flushHandwriting, moveToNextCell]);
 
   const handleCellKeyDown = useCallback((e, r, c) => {
     // ソフトウェアキーボード抑止のためマスを readOnly にしている間は、
@@ -1162,9 +1222,9 @@ export default function App() {
     //    ・打った数字が、枠とは別のマスに入る
     //    という食い違いが起きていた（実測 2026-11-15）。
     if (e.key === 'Enter') {
-      moveToNextCell(r, c);
+      advanceByUser();
     } else if (e.key === 'ArrowRight') {
-      e.preventDefault(); moveToNextCell(r, c);
+      e.preventDefault(); advanceByUser();
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
       const colsN = tableData.cols.length;
@@ -1184,7 +1244,7 @@ export default function App() {
         if (!isSolvedCell(prevR, c)) { focusCell(prevR, c); break; }
       }
     }
-  }, [moveToNextCell, tableData, settings.numpad, settings.handwriting, handleInputChange, isSolvedCell, focusCell]);
+  }, [advanceByUser, tableData, settings.numpad, settings.handwriting, handleInputChange, isSolvedCell, focusCell]);
 
   // 「丸つけ する」ボタン（すぐ判定オフのときだけ出る）。
   //
@@ -1197,23 +1257,31 @@ export default function App() {
   const gradeNow = useCallback(() => {
     setShowGradeConfirm(false);
     if (gameState !== 'playing' || settings.autoScore) return;
-    stopGame(countAnswers(inputsRef.current).correct);
-  }, [gameState, settings.autoScore, stopGame, countAnswers]);
+    // 空いているマスを残して丸つけした回は、完走ではない（学習ログでは 'aborted'。stopGame の注意を参照）
+    const { answered, correct } = countAnswers(inputsRef.current);
+    stopGame(correct, answered === count ? 'completed' : 'aborted');
+  }, [gameState, settings.autoScore, stopGame, countAnswers, count]);
 
   const requestGrading = useCallback(() => {
     if (gameState !== 'playing' || settings.autoScore) return;
+    // 書きかけの手書きがあれば、先に読み取ってから数える
+    flushHandwriting();
+    if (!runningRef.current) return;      // 読み取った答えで、全部そろって終わった
     if (countAnswers(inputsRef.current).answered < count) {
       setShowGradeConfirm(true);
       return;
     }
     gradeNow();
-  }, [gameState, settings.autoScore, countAnswers, count, gradeNow]);
+  }, [gameState, settings.autoScore, countAnswers, count, gradeNow, flushHandwriting]);
 
   // ⏳ 制限時間になったら、そこで終わる。
   //    「2分で何問できるか」という取り組み方のため。全員が同じ時刻に終われるので、
   //    一斉に始める授業で、早く終わった子が待つ・終わらない子が残る、が起きない。
   const timeUp = useCallback(() => {
     if (!runningRef.current) return;
+    // 書きかけの手書きがあれば、時間までに書いた答えとして読み取っておく
+    flushHandwriting();
+    if (!runningRef.current) return;      // 読み取った答えで、全部そろって終わった
     runningRef.current = false;
     setShowQuitConfirm(false);
     setShowGradeConfirm(false);
@@ -1221,12 +1289,17 @@ export default function App() {
     // ⚠️ 締める時刻は「制限時間ちょうど」にする。気づいた時刻（タブを隠していると
     //    見はりが遅れる）で締めると、2分の約束が回によって 2分3秒になったりする
     const exactTime = timer.stop(limitSec);
-    const { correct } = countAnswers(inputsRef.current);
+    const { answered, correct } = countAnswers(inputsRef.current);
     setGameState('result');
     setResultScore(correct);
     setTimedOut(true);
     if (settings.sound) playSound('finish');
-    saveSession('completed', exactTime, true);
+    // 時間になって終わった回は、盤面を最後まで解いていなければ完走ではない（'aborted'）。
+    // 「時間切れ」であることは ext.timeUp で分かるので、アプリの記録画面の
+    // 「とちゅうでやめた回数」には数えない（src/studyStats.js）。
+    // すぐ判定オンで全部正解なら、時間より前にそこで終わっているので、ここへは来ない
+    const finished = settings.autoScore ? correct === count : answered === count;
+    saveSession(finished ? 'completed' : 'aborted', exactTime, true);
 
     // 「○分で ○問」を記録に残す。1問も正解していない回は残さない
     if (correct === 0) return;
@@ -1243,7 +1316,7 @@ export default function App() {
       if (!picked && correct > (bestSolved[limitSec] || 0)) bestSolved[limitSec] = correct;
       return { ...prev, [mode]: { ...modeData, history, bestSolved } };
     });
-  }, [mode, count, activeDan, settings.sound, timer.stop, countAnswers, saveSession]);
+  }, [mode, count, activeDan, settings.sound, settings.autoScore, timer.stop, countAnswers, saveSession, flushHandwriting]);
 
   const timeUpRef = useRef(timeUp);
   useEffect(() => { timeUpRef.current = timeUp; }, [timeUp]);
@@ -1290,7 +1363,10 @@ export default function App() {
     e.preventDefault();
     isDrawingRef.current[i] = true;
     isDirtyRef.current[i] = true;
-    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+    if (ocrTimerRef.current) {
+      clearTimeout(ocrTimerRef.current);
+      ocrTimerRef.current = null;
+    }
 
     const pos = getCanvasPos(e, i);
     lastPosRef.current[i] = pos;
@@ -1300,7 +1376,10 @@ export default function App() {
   const drawOnCanvas = (e, i) => {
     if (!isDrawingRef.current[i]) return;
     e.preventDefault();
-    if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
+    if (ocrTimerRef.current) {
+      clearTimeout(ocrTimerRef.current);
+      ocrTimerRef.current = null;
+    }
 
     const canvas = canvasRefs[i].current;
     if (!canvas) return;
@@ -1334,8 +1413,12 @@ export default function App() {
     isDrawingRef.current[i] = false;
 
     if (ocrTimerRef.current) clearTimeout(ocrTimerRef.current);
-    // ref 経由で常に最新の認識処理を呼ぶ（古い state を掴まないように）
-    ocrTimerRef.current = setTimeout(() => drawHandlersRef.current.recognizeHandwriting(), 400);
+    // ref 経由で常に最新の認識処理を呼ぶ（古い state を掴まないように）。
+    // 走ったら予約を空にする（flushHandwriting が「まだ残っているか」を見るため）
+    ocrTimerRef.current = setTimeout(() => {
+      ocrTimerRef.current = null;
+      drawHandlersRef.current.recognizeHandwriting();
+    }, 400);
   };
 
   const preprocessCanvas = (sourceCanvas) => {
@@ -1596,9 +1679,16 @@ export default function App() {
 
           {/* ⏱ タイム。60 秒以上は「2分5.3秒」の形で出す。
               「タイマーを かくす」設定のときは、とりくんでいる間は出さない
-              （時間が気になってあせる子のため）。終わったあとのタイムは出す */}
+              （時間が気になってあせる子のため）。終わったあとのタイムは出す。
+              ⚠️ 制限時間つきの回でも、のこり時間は出さない（時間になると、予告なくそこで終わる）。
+                 2026-11-16 に、この形に決めた。時間を見せないための設定なので、
+                 「予告なく終わる」を直すつもりで、のこりだけ出す形にしないこと
+                 （tests/e2e/features.e2e.mjs が見はっている） */}
           {(!settings.hideTimer || gameState === 'result') && (
-            <div className="text-xl font-bold text-slate-700 flex items-center gap-1 min-w-[5.5rem] justify-end" data-testid="clock">
+            // ⚠️ 幅は、いちばん長い表示のぶんを先に取っておく（min-w）。
+            //    字数がふえた瞬間（59.9秒 → 1分0.0秒、のこり 2分0秒 → 1分59秒）に幅が広がると、
+            //    画面の幅によってはヘッダーが折り返し、とりくんでいる最中にマスの表が下へ動く
+            <div className={`text-xl font-bold text-slate-700 flex items-center gap-1 justify-end ${((gameState === 'playing' && activeLimit > 0) || (gameState === 'idle' && settings.timeLimit > 0)) ? 'min-w-[8.5rem]' : 'min-w-[7.5rem]'}`} data-testid="clock">
               <Clock className="w-4 h-4 text-slate-500" aria-hidden="true" />
               {/* 制限時間つきの回は、のこり時間を数える。はじめる前は、決めてある時間を出す */}
               {((gameState === 'playing' && activeLimit > 0) || (gameState === 'idle' && settings.timeLimit > 0)) && (
@@ -1783,7 +1873,7 @@ export default function App() {
                       ここに無いと、マスを飛ばすことも、すぐ判定オフで次のマスへ進むことも、
                       マスを指で押すしかなくなる */}
                   {gameState === 'playing' && (
-                    <button onMouseDown={(e) => e.preventDefault()} onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c); }} className="tap-44 btn-press text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="つぎのマスへすすむ">
+                    <button onMouseDown={(e) => e.preventDefault()} onClick={advanceByUser} className="tap-44 btn-press text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-full flex items-center gap-1 font-bold" aria-label="つぎのマスへすすむ">
                       <span><ruby>次<rp>(</rp><rt>つぎ</rt><rp>)</rp></ruby>へ</span> <ArrowRight className="w-4 h-4" aria-hidden="true" />
                     </button>
                   )}
@@ -1831,7 +1921,7 @@ export default function App() {
                 <button onMouseDown={(e) => e.preventDefault()} onClick={() => handleNumpadInput('0')} className="btn-press h-16 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl text-3xl font-bold text-slate-700 shadow-sm">
                   0
                 </button>
-                <button onMouseDown={(e) => e.preventDefault()} onClick={() => { if (activeCell) moveToNextCell(activeCell.r, activeCell.c) }} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
+                <button onMouseDown={(e) => e.preventDefault()} onClick={advanceByUser} className="btn-press h-16 bg-slate-200 hover:bg-slate-300 border-2 border-slate-300 rounded-xl text-slate-700 font-bold flex justify-center items-center shadow-sm text-lg">
                   <span><ruby>次<rp>(</rp><rt>つぎ</rt><rp>)</rp></ruby>へ</span> <ArrowRight className="w-5 h-5 ml-1" />
                 </button>
               </div>

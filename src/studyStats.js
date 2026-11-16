@@ -53,7 +53,9 @@ export function summarizeByMode(records, recentCount = 10) {
     const m = byMode[mode];
     // 取り組み量（回数・時間）は multiplayer でも数える
     m.sessions++;
-    if (r.status === 'aborted') m.aborted++;
+    // 制限時間になって終わった回（ext.timeUp）は、自分でやめたのではないので数えない。
+    // 学習ログの status は 'aborted'（完走ではない）だが、決めた時間までやりきっている
+    if (r.status === 'aborted' && !(r.ext && r.ext.timeUp === true)) m.aborted++;
     if (typeof r.elapsedMs === 'number') m.totalMs += r.elapsedMs;
     if (typeof r.activeMs === 'number') m.activeMs += r.activeMs;
 

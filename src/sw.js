@@ -72,8 +72,22 @@ self.addEventListener('fetch', (e) => {
     e.respondWith((async () => {
       // 手元の控え。まず「開こうとした画面そのもの」を探す。これを飛ばして
       // index.html から返すと、圏外では利用規約を開いてもアプリが出る。
-      const fromCache = async () =>
-        (await caches.match(req)) || (await caches.match('./index.html'));
+      //
+      // ⚠️ 「?」より後ろは無視して探す（ignoreSearch）。付けたまま探すと
+      //    terms.html?from=app のような URL は控えに見つからず、アプリの画面を返していた。
+      //    圏外のときだけの話だったが、下の「3 秒で控えに切り替える」を入れてからは、
+      //    返事の遅い回線でも起きるようになっていた（実測 2026-11-16）。
+      // ⚠️ 控えに無い画面を index.html で代えるのは、入口（./ と ./index.html）への遷移だけ。
+      //    それ以外まで代えると、開いたつもりの画面とちがうもの（アプリ）が出る。
+      const fromCache = async () => {
+        const hit = await caches.match(req, { ignoreSearch: true });
+        if (hit) return hit;
+        const entry = new URL('./', self.location.href).pathname;
+        if (url.pathname === entry || url.pathname === `${entry}index.html`) {
+          return caches.match('./index.html');
+        }
+        return undefined;
+      };
 
       // ⚠️ 「つながっているのに返事が来ない」回線（混んだ校内 Wi-Fi・認証待ちのプロキシ）では
       //    fetch がいつまでも終わらない。圏外ならすぐ失敗して控えが出るのに、
