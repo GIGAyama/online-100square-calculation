@@ -235,3 +235,53 @@ test('すぐ判定オフでも、時間になれば、入れたところまで�
     await context.close();
   }
 });
+
+test('だんを 10 こ ぜんぶ えらんだときは、「ぜんぶ」と同じにあつかう', async () => {
+  // 以前: 盤面は「ぜんぶ」と同じなのに、だんをえらんだ回としてベストタイムから外していた
+  const { context, page } = await open();
+  try {
+    await page.waitForSelector('table.sq-table');
+    await page.selectOption('select[aria-label="計算の種類"]', 'かけ算');
+    const danButton = page.locator('[data-testid="dan-button"]');
+    await danButton.click();
+    const dialog = page.getByRole('dialog');
+    for (let n = 0; n <= 9; n++) await dialog.getByRole('button', { name: `${n}のだん` }).click();
+    await dialog.getByRole('button', { name: 'きめる' }).click();
+    assert.match(await danButton.innerText(), /ぜんぶ/);
+
+    await page.selectOption('select[aria-label="問題数"]', '10');
+    await chooseAndStart(page);
+    for (let i = 0; i < 10; i++) await solveFocused(page);
+    await waitForState(page, 'result');
+    const saved = await page.evaluate(() => ({
+      records: JSON.parse(localStorage.getItem('giga_calc_records_v4'))['かけ算'],
+      log: JSON.parse(localStorage.getItem('study.records.v1')).at(-1),
+    }));
+    assert.ok(saved.records.best[10] > 0, 'ベストタイムに入る');
+    assert.equal(saved.log.ext.dan, undefined);
+  } finally {
+    await context.close();
+  }
+});
+
+test('とりくんでいる間にタイムの字数がふえても、マスの表の位置は動かない', async () => {
+  // 以前: 幅によっては、1分になった瞬間や「のこり」の表示が変わった瞬間にヘッダーが折り返し、
+  //       マスの表が 39px 下へ動いた
+  const tableTop = (page) => page.evaluate(() => Math.round(document.querySelector('table.sq-table').getBoundingClientRect().top));
+  for (const [width, settings, advance] of [
+    [652, {}, 61_000],                       // 59.9秒 → 1分0.0秒
+    [686, { timeLimit: 120 }, 2_000],        // のこり 2分0秒 → のこり 1分59秒
+    [790, { timeLimit: 600 }, 2_000],        // のこり 10分0秒 → のこり 9分59秒
+  ]) {
+    const { context, page } = await open({ settings, viewport: { width, height: 900 }, fakeClock: true });
+    try {
+      await chooseAndStart(page, { mode: 'たし算', count: 10 });
+      const before = await tableTop(page);
+      await page.clock.fastForward(advance);
+      await page.waitForTimeout(200);
+      assert.equal(await tableTop(page), before, `幅 ${width}px`);
+    } finally {
+      await context.close();
+    }
+  }
+});

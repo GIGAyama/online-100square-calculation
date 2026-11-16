@@ -13,7 +13,7 @@ import { saveStudyRecord } from './studyLog';
 //    src/sw.js の版はキャッシュ名用で、配信物の中身から自動で作られる別物。
 //    品質ゲートが見ているのは sw.js と package.json の2つだけなので、
 //    ここは上げ忘れても止まらない（README「リリース手順」に手順を書いてある）
-export const APP_VERSION = '1.8.0';
+export const APP_VERSION = '1.8.1';
 export const APP_ID = 'square100';
 
 // 内部で使っている日本語のモード名 → 集計用の英数小文字。
@@ -154,6 +154,27 @@ export function finalizeStudySession(session, { status, elapsedMs, activeMs, inp
   if (session.timedKey !== null) {
     getCellStat(session, session.timedKey).ms += performance.now() - session.timedSince;
     session.timedKey = null;
+  }
+
+  // すぐ判定オフでは、丸つけの時点でマスに入っている数が、その子の答えである。
+  //
+  // ⚠️ recordAttempt は「答えの桁数まで入ったとき」にしか呼ばれない。答えが 2 けたのマスに
+  //    1 けたの数を入れたまま丸つけをすると、そのマスは「答えていない」あつかいになり、
+  //    画面では「まちがい」なのに記録から抜けていた（実測 2026-11-16: 10問のうち 3問を
+  //    そうすると attempted 7 / firstTryCorrect 7 で、一発で正解できた率が 100% と出た）。
+  //    最後に入っている数が、まだ解答として数えられていなければ、ここで 1 回ぶん数える
+  //    （同じ数は recordAttempt が二重に数えない）。
+  //
+  // すぐ判定オンでは数えない。そちらは桁数まで入った時点で判定が済んでいて、
+  // マスに残っている数は「打っている途中」のものだから。
+  if (!session.autoScore) {
+    for (const key of session.scope) {
+      const finalVal = inputs[key];
+      if (finalVal === undefined || finalVal === '') continue;
+      const [r, c] = key.split('_').map(Number);
+      const isCorrect = parseInt(finalVal, 10) === answerOf(session.mode, session.rows[r], session.cols[c]);
+      recordAttempt(session, r, c, finalVal, isCorrect);
+    }
   }
 
   const items = [];

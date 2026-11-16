@@ -6,7 +6,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   startServer, launchBrowser, openApp, chooseAndStart, readBoard, waitForState,
-  answerAt, cellAt, clickCell, typeDigits, solveFocused,
+  answerAt, cellAt, clickCell, typeDigits, solveFocused, waitForHandwriting,
 } from './helpers.mjs';
 
 let server;
@@ -177,6 +177,124 @@ test('左の数は重ならない。100問なら 0〜9（引き算は 10〜19）
       const rows = (await readBoard(page)).rows;
       assert.equal(new Set(rows).size, 4, `${mode} 40問: ${rows.join(',')}`);
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// ---- ここから下は、1.8.0 を出したあとの見直しで見つかったもの（2026-11-16） ----
+
+/** 手書きの左のわくに、たての線（1）を 1 本書く。指を離した直後に戻る */
+async function drawOne(page) {
+  const box = await page.locator('canvas').first().boundingBox();
+  const x = box.x + box.width / 2;
+  await page.mouse.move(x, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(x, box.y + box.height * 0.5, { steps: 4 });
+  await page.mouse.move(x, box.y + box.height * 0.8, { steps: 4 });
+  await page.mouse.up();
+}
+
+test('手書きで書いてすぐ「次へ」を押しても、書いた答えは捨てられない', async () => {
+  // 以前: 読み取りは指を離して 0.4 秒後。その前に「次へ」を押すと、読み取りの予約ごと
+  //       線が消えて、マスは空のまま枠だけ進んだ（すぐ判定オフでは、毎マス通る道）
+  const { context, page } = await open({ settings: { handwriting: true, autoScore: false } });
+  try {
+    await page.waitForSelector('table.sq-table');
+    await waitForHandwriting(page);
+    await chooseAndStart(page, { mode: 'たし算', count: 10 });
+    await drawOne(page);
+    await page.getByRole('button', { name: 'つぎのマスへすすむ' }).click();   // 0.4 秒たつ前に押す
+    await page.waitForTimeout(700);
+    const board = await readBoard(page);
+    assert.match(cellAt(board, 0, 0).val, /^\d+$/, '書いた数字が、もとのマスに入っている');
+    assert.deepEqual(board.active, { r: 0, c: 1 }, '枠は、となりへ 1 つだけ進む');
+  } finally {
+    await context.close();
+  }
+});
+
+test('手書きで書いてすぐ「丸つけ する」を押しても、書いた答えは数に入る', async () => {
+  const { context, page } = await open({ settings: { handwriting: true, autoScore: false } });
+  try {
+    await page.waitForSelector('table.sq-table');
+    await waitForHandwriting(page);
+    await chooseAndStart(page, { mode: 'たし算', count: 10 });
+    await drawOne(page);
+    await page.locator('.tool-column').getByRole('button', { name: /つけ する/ }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.waitFor();
+    assert.match(await dialog.innerText(), /9マス/, '書いた 1 マスは「入れた」に数える（空きは 9）');
+  } finally {
+    await context.close();
+  }
+});
+
+test('手書きで書いてすぐ別のマスを押しても、書いた答えは捨てられない', async () => {
+  const { context, page } = await open({ settings: { handwriting: true, autoScore: false } });
+  try {
+    await page.waitForSelector('table.sq-table');
+    await waitForHandwriting(page);
+    await chooseAndStart(page, { mode: 'たし算', count: 10 });
+    await drawOne(page);
+    await clickCell(page, 0, 5);
+    await page.waitForTimeout(700);
+    const board = await readBoard(page);
+    assert.match(cellAt(board, 0, 0).val, /^\d+$/, '書いた数字が、書いていたマスに入っている');
+    assert.equal(cellAt(board, 0, 5).val, '', '押した先のマスには入らない');
+    assert.deepEqual(board.active, { r: 0, c: 5 });
+  } finally {
+    await context.close();
+  }
+});
+
+test('正解ずみのマスを押しても、枠とフォーカスは動かず、そのまま入力をつづけられる', async () => {
+  // 以前: 枠だけが正解ずみのマスへ移り、フォーカスはどのマスにも無くなった。
+  //       テンキーもキーボードも効かず、未回答のマスを押すまで何も入らなかった
+  const { context, page } = await open({ settings: { numpad: true } });
+  try {
+    await chooseAndStart(page, { mode: 'たし算', count: 10 });
+    await solveFocused(page);                           // (0,0) を解く → いま (0,1)
+    await page.locator('table.sq-table tbody tr').nth(0).locator('td').nth(0).click({ force: true });
+    let board = await readBoard(page);
+    assert.deepEqual(board.active, { r: 0, c: 1 }, '枠は、解いているマスのまま');
+    assert.deepEqual(board.focused, { r: 0, c: 1 }, 'フォーカスも、解いているマスのまま');
+
+    const answer = String(answerAt(board, 0, 1));
+    for (const ch of answer) await page.getByRole('button', { name: ch, exact: true }).click();
+    board = await readBoard(page);
+    assert.ok(cellAt(board, 0, 1).disabled, 'テンキーの数字は、解いているマスに入る');
+  } finally {
+    await context.close();
+  }
+});
+
+test('すぐ判定オフ: 桁の足りないまちがいも、学習ログに「まちがい」として残る', async () => {
+  // 以前: 答えの桁数まで入れたときしか「答えた」と数えていなかった。2 けたの答えに
+  //       1 けたを入れたマスは記録から抜け、まちがえているのに「一発で正解できた率 100%」になった
+  const { context, page } = await open({ settings: { autoScore: false, numpad: true } });
+  try {
+    await chooseAndStart(page, { mode: '引き算', count: 10 });
+    const board = await readBoard(page);
+    let short = 0;
+    for (const cell of board.cells) {
+      const answer = answerAt(board, cell.r, cell.c);
+      await clickCell(page, cell.r, cell.c);
+      // 答えが 2 けたのマスのうち 1 つには、1 けたの数を入れる（引き算は「−0」のマスが必ず 2 けた）
+      if (answer >= 10 && short === 0) { await typeDigits(page, '9'); short += 1; } else await typeDigits(page, answer);
+    }
+    const stillPlaying = (await readBoard(page)).state === 'playing';
+    if (stillPlaying) await page.locator('.tool-column').getByRole('button', { name: /つけ する/ }).click();
+    await waitForState(page, 'result');
+
+    const log = await page.evaluate(() => JSON.parse(localStorage.getItem('study.records.v1')).at(-1));
+    assert.equal(log.summary.attempted, 10, '答えを入れた 10 マスぜんぶを数える');
+    assert.equal(log.summary.correct, 9);
+    assert.equal(log.summary.firstTryCorrect, 9, 'まちがえたマスは、一発で正解に入れない');
+    assert.equal(log.ext.wrongItems.length, 1);
+    const wrong = log.items.filter((item) => !item.ok);
+    assert.equal(wrong.length, 1);
+    assert.deepEqual(wrong[0].wrong, ['9']);
   } finally {
     await context.close();
   }

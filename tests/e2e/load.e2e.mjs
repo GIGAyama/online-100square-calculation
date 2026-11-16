@@ -152,3 +152,22 @@ test('返事の来ない回線でも、入れてある端末は数秒でマス�
     await context.close();
   }
 });
+
+test('返事の来ない回線で「?」つきの利用規約を開いても、アプリではなく利用規約が出る', async () => {
+  // 以前: 控えを「?」まで含めた URL で探していたので見つからず、3 秒後にアプリの画面を返していた
+  const { context, page } = await open({ serviceWorkers: 'allow' });
+  try {
+    await page.waitForSelector('table.sq-table');
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('table.sq-table');
+
+    server.state.hangNavigation = true;
+    await page.goto(`${server.url}terms.html?from=app`, { waitUntil: 'load', timeout: 20000 });
+    assert.match(await page.title(), /利用規約/);
+    assert.equal(await page.locator('table.sq-table').count(), 0);
+  } finally {
+    server.state.hangNavigation = false;
+    await context.close();
+  }
+});
