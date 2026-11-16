@@ -4,7 +4,7 @@
 インターネットにつながっていなくても使えます。名前や出席番号は一切入力しません。
 
 - 開くところ … <https://online-100square-calculation.giga-school.com/>
-- 子どもに読ませる使い方（ふりがなつき・画面写真31点）
+- 子どもに読ませる使い方（ふりがなつき・画面写真45点）
   … <https://giga-school.com/apps/online-100square-calculation/manual/>
   （原稿は [docs/manual/manual.md](docs/manual/manual.md)。アプリのフッターの
   「つかいかた」もここへ行く）

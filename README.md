@@ -202,7 +202,7 @@ GIGAスクール構想で導入された端末（ChromebookやiPadなど）で�
 ├── .github/workflows/ci.yml      # build → check → 自己テスト／実ブラウザのテスト（pull_request と push）
 ├── .github/workflows/deploy.yml  # main への push で GitHub Pages へ公開
 ├── docs/note/                    # 紹介記事の原稿と、実際に操作して撮った画面（19点）
-├── docs/manual/                  # 子ども向けの使い方マニュアルと、その画面写真（31点）
+├── docs/manual/                  # 子ども向けの使い方マニュアルと、その画面写真（45点）
 ├── AUDIT.md                      # 実測値と、測っていないものの明示
 └── MANUAL.md                     # 先生向けの使い方
 ```
