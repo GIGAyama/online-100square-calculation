@@ -893,14 +893,25 @@ export default function App() {
     timer.start();
   };
 
-  const stopGame = useCallback((finalScore) => {
+  // status: 学習ログに残す終わり方。'completed' は「盤面を最後まで解いた（完走した）」回だけ。
+  //
+  // ⚠️ 完走していない回を 'completed' にしないこと。まなびクエストは square100 の 'completed' を
+  //    「完走」として「100マス計算記録」シートに書き出し、タイム・じこベスト・ランキング・
+  //    経験値に使う（GIGAyama/Gamification の manabi-quest/10_studylog.gs buildCalcRecordRow_）。
+  //    じこベストには点数の条件が無いので、1.8.0 では
+  //      ・制限時間 1 分で 100問 → タイム 60 秒の「完走」
+  //      ・1 マスだけ答えて「丸つけ する」 → 数秒の「完走」
+  //    が自己ベストとして残り、本人にも二度と更新できなくなっていた（2026-11-16 に確認）。
+  //    1.8.0 より前は、終わり方が「全部正解」「全部うめた」の 2 つしかなく、
+  //    'completed' はいつも完走だった。その約束に戻す。
+  const stopGame = useCallback((finalScore, status = 'completed') => {
     if (!runningRef.current) return;
     runningRef.current = false;
     const exactTime = timer.stop();
     setGameState('result');
     setResultScore(finalScore);
     if (settings.sound) playSound('finish');
-    saveSession('completed', exactTime);
+    saveSession(status, exactTime);
 
     if (finalScore === count) {
       const today = new Date().toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -1246,8 +1257,10 @@ export default function App() {
   const gradeNow = useCallback(() => {
     setShowGradeConfirm(false);
     if (gameState !== 'playing' || settings.autoScore) return;
-    stopGame(countAnswers(inputsRef.current).correct);
-  }, [gameState, settings.autoScore, stopGame, countAnswers]);
+    // 空いているマスを残して丸つけした回は、完走ではない（学習ログでは 'aborted'。stopGame の注意を参照）
+    const { answered, correct } = countAnswers(inputsRef.current);
+    stopGame(correct, answered === count ? 'completed' : 'aborted');
+  }, [gameState, settings.autoScore, stopGame, countAnswers, count]);
 
   const requestGrading = useCallback(() => {
     if (gameState !== 'playing' || settings.autoScore) return;
@@ -1276,12 +1289,17 @@ export default function App() {
     // ⚠️ 締める時刻は「制限時間ちょうど」にする。気づいた時刻（タブを隠していると
     //    見はりが遅れる）で締めると、2分の約束が回によって 2分3秒になったりする
     const exactTime = timer.stop(limitSec);
-    const { correct } = countAnswers(inputsRef.current);
+    const { answered, correct } = countAnswers(inputsRef.current);
     setGameState('result');
     setResultScore(correct);
     setTimedOut(true);
     if (settings.sound) playSound('finish');
-    saveSession('completed', exactTime, true);
+    // 時間になって終わった回は、盤面を最後まで解いていなければ完走ではない（'aborted'）。
+    // 「時間切れ」であることは ext.timeUp で分かるので、アプリの記録画面の
+    // 「とちゅうでやめた回数」には数えない（src/studyStats.js）。
+    // すぐ判定オンで全部正解なら、時間より前にそこで終わっているので、ここへは来ない
+    const finished = settings.autoScore ? correct === count : answered === count;
+    saveSession(finished ? 'completed' : 'aborted', exactTime, true);
 
     // 「○分で ○問」を記録に残す。1問も正解していない回は残さない
     if (correct === 0) return;
@@ -1298,7 +1316,7 @@ export default function App() {
       if (!picked && correct > (bestSolved[limitSec] || 0)) bestSolved[limitSec] = correct;
       return { ...prev, [mode]: { ...modeData, history, bestSolved } };
     });
-  }, [mode, count, activeDan, settings.sound, timer.stop, countAnswers, saveSession, flushHandwriting]);
+  }, [mode, count, activeDan, settings.sound, settings.autoScore, timer.stop, countAnswers, saveSession, flushHandwriting]);
 
   const timeUpRef = useRef(timeUp);
   useEffect(() => { timeUpRef.current = timeUp; }, [timeUp]);

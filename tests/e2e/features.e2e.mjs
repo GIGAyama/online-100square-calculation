@@ -171,7 +171,10 @@ test('時間を決めると、時間になったところで終わり、「○�
     assert.deepEqual(saved.records.bestSolved, { 60: 3 }, '「1分で さいこう 3問」が残る');
     assert.deepEqual(saved.records.best, {}, 'ベストタイムには入れない（ぜんぶは解いていない）');
 
-    assert.equal(saved.log.status, 'completed', '自分でやめたのではないので、中断にはしない');
+    // 盤面を最後まで解いていないので、学習ログでは完走（completed）にしない。
+    // まなびクエストは completed を「完走」として、タイム・じこベストに使う（1.8.0 では
+    // 制限時間ちょうどの 60 秒が「100問 60秒」の自己ベストになっていた）
+    assert.equal(saved.log.status, 'aborted', '完走ではない');
     assert.equal(saved.log.ext.timeUp, true);
     assert.equal(saved.log.ext.timeLimitMs, 60000);
     assert.equal(saved.log.elapsedMs, 60000, '締める時刻は、制限時間ちょうど');
@@ -211,6 +214,7 @@ test('時間を決めていても、時間内に全部解ければ、いつも�
     assert.equal(saved.log.length, 1);
     assert.equal(saved.log[0].ext.timeLimitMs, 60000);
     assert.equal(saved.log[0].ext.timeUp, undefined);
+    assert.equal(saved.log[0].status, 'completed', '時間内に全部解いた回は完走');
   } finally {
     await context.close();
   }
@@ -231,6 +235,9 @@ test('すぐ判定オフでも、時間になれば、入れたところまで�
     const after = await readBoard(page);
     assert.equal(after.cells.filter((cell) => cell.correct).length, 2);
     assert.equal(after.cells.filter((cell) => cell.wrong).length, 1);
+    const log = await page.evaluate(() => JSON.parse(localStorage.getItem('study.records.v1')).at(-1));
+    assert.equal(log.status, 'aborted', '空いているマスが残っているので、完走ではない');
+    assert.equal(log.ext.timeUp, true);
   } finally {
     await context.close();
   }

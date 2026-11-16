@@ -139,6 +139,13 @@ test('すぐ判定オフ: 空いているマスを残して「丸つけ する�
     await waitForState(page, 'result');
     board = await readBoard(page);
     assert.equal(board.cells.filter((cell) => cell.correct).length, 3);
+
+    // 空いているマスを残した丸つけは、完走ではない。学習ログでは 'aborted' にする
+    // （1.8.0 では completed にしていたので、1 マスだけ答えて丸つけすると、
+    //   まなびクエストに数秒の「完走」タイムが自己ベストとして残った）
+    const log = await page.evaluate(() => JSON.parse(localStorage.getItem('study.records.v1')).at(-1));
+    assert.equal(log.status, 'aborted');
+    assert.equal(log.summary.attempted, 3);
   } finally {
     await context.close();
   }
@@ -292,6 +299,7 @@ test('すぐ判定オフ: 桁の足りないまちがいも、学習ログに「
     assert.equal(log.summary.correct, 9);
     assert.equal(log.summary.firstTryCorrect, 9, 'まちがえたマスは、一発で正解に入れない');
     assert.equal(log.ext.wrongItems.length, 1);
+    assert.equal(log.status, 'completed', '全部のマスに答えを入れてから丸つけした回は、完走');
     const wrong = log.items.filter((item) => !item.ok);
     assert.equal(wrong.length, 1);
     assert.deepEqual(wrong[0].wrong, ['9']);
